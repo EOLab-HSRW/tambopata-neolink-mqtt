@@ -68,6 +68,8 @@ zoom_levels = [1.0, 2.0, 3.5]
 zoom_index = 0
 interactive_event = Event()  # To pause stdin_loop during interactive inputs
 wakeup_sent = False # To avoid multiple wakeup commands
+current_event = None # 'midnight' or 'noon' during daily capture sequences
+current_preset = None # Current preset being processed during daily capture sequences
 
 def connect_mqtt(broker, port, client_id, username=None, password=None):
     def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -112,13 +114,17 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 timestamp = now.strftime("%H-%M-%S")   
                 lens_id = "0" if lens_0_name in msg.topic else "1"
                 subdir = os.path.join(save_dir, date_str)
-                os.makedirs(subdir, exist_ok=True)  # Create date-based subdir if needed
-                filename = os.path.join(subdir, f"lens{lens_id}_{timestamp}.jpg")
+                os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
+                # Include event and preset if in daily capture mode, else just timestamp
+                if current_event and current_preset is not None:
+                    filename = os.path.join(subdir, f"lens{lens_id}_{current_event}_preset{current_preset}_{timestamp}.jpg")
+                else:
+                    filename = os.path.join(subdir, f"lens{lens_id}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
                 logging.info(f"Saved snapshot: {filename}")
             except Exception as e:
-                logging.error(f"Failed to decode image: {e}")
+                logging.error(f"Failed to decode image from {msg.topic}: {e}")
         elif msg.topic == battery_level_topic:
             level = msg.payload.decode()
             logging.info(f"Battery level: {level}%")
@@ -194,6 +200,9 @@ def manual_zoom_control(client, amount):
         logging.warning(f"Failed to send manual zoom command with amount {amount} to {zoom_topic}, rc={result.rc}")
 
 def trigger_snapshot(client):
+    global current_event, current_preset
+    current_event = None
+    current_preset = None
     result_0 = client.publish(preview_query_topic_0, "", qos=1, retain=False)
     if result_0.rc == 0:
         logging.info(f"Sent trigger snapshot command to {preview_query_topic_0}")
@@ -309,6 +318,7 @@ def stdin_loop(command_queue: Queue):
     global interactive_event
     logging.info("Stdin listener started. Type '--help' and press Enter for commands list.")
     while True:
+        # Skip reading if interactive input is active (e.g., during 'assign' prompts)
         if interactive_event.is_set():
             time.sleep(0.1)
             continue
@@ -362,14 +372,20 @@ def stdin_loop(command_queue: Queue):
                 logging.info(f"Unknown command: {line} (try: up/down/left/right, 0-8, r/z/s/b/a)")
 
 
-async def perform_daily_capture(client):
+async def perform_daily_capture(client, is_midnight_event):
+    """Perform the daily capture sequence: battery query, go to presets 0-3, snapshot each."""
+    global current_event, current_preset
+    current_event = 'midnight' if is_midnight_event else 'noon'
     query_battery(client)
     await asyncio.sleep(2)
-    for i in range(6):
+    for i in range(4):
+        current_preset = i
         go_to_preset(client, i)
         await asyncio.sleep(5)
         trigger_snapshot(client)
         await asyncio.sleep(20)
+    current_event = None
+    current_preset = None
 
 def time_to_next_noon():
     """Seconds until local 12:00 noon (since camera +5h)."""
@@ -401,13 +417,13 @@ async def scheduler(client):
             await asyncio.sleep(20)
             set_ir_control(client, 'on')
             await asyncio.sleep(10)
-            await perform_daily_capture(client)
+            await perform_daily_capture(client, is_midnight_event)
             set_ir_control(client, 'auto')
         else:
             logging.info("Noon reached — capture sequence")
             wakeup_both_lenses(client)
             await asyncio.sleep(20)
-            await perform_daily_capture(client)
+            await perform_daily_capture(client, is_midnight_event)
 
 async def main():
     global ir_mode, zoom_index

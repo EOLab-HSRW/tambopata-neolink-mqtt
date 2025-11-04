@@ -106,4 +106,4 @@ Finally, run the client with:
 python client.py
 ```
 
-**Make sure you are connected to VPN**
+**Make sure you are connected to the VPN if using university's WiFi**
