@@ -294,9 +294,9 @@ async def process_commands(client, command_queue):
             elif cmd_type == 'presets_report':
                 request_presets_report(client)
             elif cmd_type == 'daily_capture_noon':
-                await perform_daily_capture(client, is_midnight_event=False)
+                await perform_daily_capture(client, False)
             elif cmd_type == 'daily_capture_midnight':
-                await perform_daily_capture(client, is_midnight_event=True)
+                await perform_daily_capture(client, True)
             elif cmd_type == 'assign':
                 interactive_event.set()  #Pause stdin_loop during interactive input
                 try:
