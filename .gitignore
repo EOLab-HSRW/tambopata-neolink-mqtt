@@ -1,0 +1,6 @@
+python_mqtt_client/captures
+mqtt/config/pwfile
+.DS_Store
+mqtt/data
+*.log
+*.tmp
