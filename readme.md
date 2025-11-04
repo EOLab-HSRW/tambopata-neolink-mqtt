@@ -107,3 +107,5 @@ python client.py
 ```
 
 **Make sure you are connected to the VPN if using university's WiFi**
+
+https://wiki.eolab.de/doku.php?id=snapcon2022:openvpn-connection&s[]=vpn
