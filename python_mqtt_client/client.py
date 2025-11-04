@@ -293,8 +293,10 @@ async def process_commands(client, command_queue):
                 query_battery(client)
             elif cmd_type == 'presets_report':
                 request_presets_report(client)
-            elif cmd_type == 'daily_capture':
-                await perform_daily_capture(client)
+            elif cmd_type == 'daily_capture_noon':
+                await perform_daily_capture(client, is_midnight_event=False)
+            elif cmd_type == 'daily_capture_midnight':
+                await perform_daily_capture(client, is_midnight_event=True)
             elif cmd_type == 'assign':
                 interactive_event.set()  #Pause stdin_loop during interactive input
                 try:
@@ -372,10 +374,15 @@ def stdin_loop(command_queue: Queue):
                 logging.info(f"Unknown command: {line} (try: up/down/left/right, 0-8, r/z/s/b/a)")
 
 
-async def perform_daily_capture(client, is_midnight_event):
+async def perform_daily_capture(client, event_type: bool):
     """Perform the daily capture sequence: battery query, go to presets 0-3, snapshot each."""
     global current_event, current_preset
-    current_event = 'midnight' if is_midnight_event else 'noon'
+    if event_type:  # Midnight event
+        current_event = 'midnight'
+        set_ir_control(client, 'on')
+        await asyncio.sleep(5)
+    else:
+        current_event = 'noon'
     query_battery(client)
     await asyncio.sleep(2)
     for i in range(4):
@@ -386,6 +393,7 @@ async def perform_daily_capture(client, is_midnight_event):
         await asyncio.sleep(20)
     current_event = None
     current_preset = None
+    set_ir_control(client, 'auto')
 
 def time_to_next_noon():
     """Seconds until local 12:00 noon (since camera +5h)."""
@@ -415,10 +423,7 @@ async def scheduler(client):
             logging.info("Midnight reached — IR ON + capture sequence")
             wakeup_both_lenses(client)
             await asyncio.sleep(20)
-            set_ir_control(client, 'on')
-            await asyncio.sleep(10)
             await perform_daily_capture(client, is_midnight_event)
-            set_ir_control(client, 'auto')
         else:
             logging.info("Noon reached — capture sequence")
             wakeup_both_lenses(client)

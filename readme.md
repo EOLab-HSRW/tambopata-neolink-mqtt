@@ -69,7 +69,7 @@ Then attach to the MQTT Broker container
 docker compose exec mosquitto sh
 ```
 
-7. Create new mosquitto user
+6. Create new mosquitto user
 
 ```bash
 mosquitto_passwd -c /mosquitto/config/pwfile USERNAME
@@ -88,13 +88,13 @@ Then exit the bash
 exit
 ```
 
-8. Restart the compose container
+7. Restart the compose container
 
 ```bash
 docker compose restart
 ```
 
-9. Attach to the MQTT Client container 
+8. Attach to the MQTT Client container 
 
 ```bash
 docker compose exec mqtt-client sh
