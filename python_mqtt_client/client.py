@@ -97,16 +97,25 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
                 return
             try:
-                img_data = base64.b64decode(msg.payload)
+                raw = msg.payload.decode(errors="ignore").strip()
+                if raw.startswith("data:image"):
+                    # data URI
+                    b64 = raw.split(",", 1)[1]
+                else:
+                    b64 = raw
+                # remove possible surrounding quotes
+                if b64.startswith('"') and b64.endswith('"'):
+                    b64 = b64[1:-1]
+                img_bytes = base64.b64decode(b64)
                 now = datetime.now()
-                date_str = now.strftime("%d.%m.%Y")  # e.g., "03.11.2025"
-                timestamp = now.strftime("%H-%M-%S")   # e.g., "11-06-50" (time only, since date is in dir)
+                date_str = now.strftime("%d.%m.%Y")
+                timestamp = now.strftime("%H-%M-%S")   
                 lens_id = "0" if lens_0_name in msg.topic else "1"
                 subdir = os.path.join(save_dir, date_str)
                 os.makedirs(subdir, exist_ok=True)  # Create date-based subdir if needed
                 filename = os.path.join(subdir, f"lens{lens_id}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
-                    f.write(img_data)
+                    f.write(img_bytes)
                 logging.info(f"Saved snapshot: {filename}")
             except Exception as e:
                 logging.error(f"Failed to decode image: {e}")
@@ -275,6 +284,8 @@ async def process_commands(client, command_queue):
                 query_battery(client)
             elif cmd_type == 'presets_report':
                 request_presets_report(client)
+            elif cmd_type == 'daily_capture':
+                await perform_daily_capture(client)
             elif cmd_type == 'assign':
                 interactive_event.set()  #Pause stdin_loop during interactive input
                 try:
@@ -333,6 +344,9 @@ def stdin_loop(command_queue: Queue):
             elif line == 'p':
                 command_queue.put(('presets_report',))
                 logging.info("Enqueued presets report request")
+            elif line == 'd':
+                command_queue.put(('daily_capture',))
+                logging.info("Enqueued daily capture sequence")
             elif line == '--help':
                 logging.info("Commands:\n"
                              " up/down/left/right - PTZ control\n"
