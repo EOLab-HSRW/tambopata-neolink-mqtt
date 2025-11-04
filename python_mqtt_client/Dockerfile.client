@@ -1,0 +1,7 @@
+FROM python:3.12
+
+WORKDIR /app/python_mqtt_client
+
+COPY ./python_mqtt_client/requirements.txt .
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt

@@ -1,0 +1,53 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: mosquitto
+    volumes:
+      - ./mqtt/config:/mosquitto/config
+      - ./mqtt/data:/mosquitto/data
+      - ./mqtt/log:/mosquitto/log
+    ports:
+      - 1883:1883
+      - 9001:9001
+    stdin_open: true
+    tty: true
+    networks:
+      - mqtt_default
+    restart: unless-stopped
+
+  neolink:
+    image: quantumentangledandy/neolink
+    container_name: neolink
+    volumes:
+      - ./neolink/config.toml:/etc/neolink.toml
+    environment:
+      - NEO_LINK_MODE=mqtt-rtsp
+    networks:
+      - mqtt_default
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  mqtt-client:
+    build:
+      context: .
+      dockerfile: ./python_mqtt_client/Dockerfile.client
+    container_name: mqtt-client
+    volumes:
+      - ./python_mqtt_client:/app/python_mqtt_client
+      # - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+      # - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      # - DISPLAY=$DISPLAY
+      # - XAUTHORITY=/tmp/.docker.xauth
+      - ENABLE_KEYBOARD=true
+    networks:
+      - mqtt_default
+    depends_on:
+      - mosquitto
+    stdin_open: true
+    tty: true
+
+networks:
+  mqtt_default:
+    driver: bridge
