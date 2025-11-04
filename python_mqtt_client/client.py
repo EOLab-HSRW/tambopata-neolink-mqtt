@@ -393,7 +393,7 @@ async def perform_daily_capture(client, event_type: bool):
         go_to_preset(client, i)
         await asyncio.sleep(5)
         trigger_snapshot(client)
-        await asyncio.sleep(20)
+        await asyncio.sleep(30)
     current_event = None
     current_preset = None
     set_ir_control(client, 'auto')
