@@ -94,6 +94,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
         logging.info(f"Disconnected with reason code: {reason_code} (flags: {flags})")
 
     def on_message(client, userdata, msg):
+        global current_event, current_preset
         if "preview" in msg.topic:
             if msg.retain:  # Skip retained messages (e.g., last preview on subscribe)
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
@@ -200,9 +201,6 @@ def manual_zoom_control(client, amount):
         logging.warning(f"Failed to send manual zoom command with amount {amount} to {zoom_topic}, rc={result.rc}")
 
 def trigger_snapshot(client):
-    global current_event, current_preset
-    current_event = None
-    current_preset = None
     result_0 = client.publish(preview_query_topic_0, "", qos=1, retain=False)
     if result_0.rc == 0:
         logging.info(f"Sent trigger snapshot command to {preview_query_topic_0}")
