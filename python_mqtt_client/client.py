@@ -357,19 +357,24 @@ def stdin_loop(command_queue: Queue):
                 command_queue.put(('presets_report',))
                 logging.info("Enqueued presets report request")
             elif line == 'd':
-                command_queue.put(('daily_capture',))
-                logging.info("Enqueued daily capture sequence")
+                command_queue.put(('daily_capture_noon',))
+                logging.info("Enqueued noon daily capture sequence")
+            elif line == 'm':
+                command_queue.put(('daily_capture_midnight',))
+                logging.info("Enqueued midnight daily capture sequence")
             elif line == '--help':
                 logging.info("Commands:\n"
-                             " up/down/left/right - PTZ control\n"
-                             " 0-8 - Go to PTZ preset position\n"
-                             " r - Toggle IR mode (auto/on/off)\n"
-                             " z - Cycle zoom levels (1x/2x/3.5x)\n"
-                             " s - Trigger snapshot on both lenses\n"
-                             " b - Query battery level\n"
-                             " a - Assign preset (will prompt for ID and name)\n"
-                             " p - Request presets report\n"
-                             " --help - Show this help message")
+                                " up/down/left/right - PTZ control\n"
+                                " 0-8 - Go to PTZ preset position\n"
+                                " r - Toggle IR mode (auto/on/off)\n"
+                                " z - Cycle zoom levels (1x/2x/3.5x)\n"
+                                " s - Trigger snapshot on both lenses\n"
+                                " b - Query battery level\n"
+                                " a - Assign preset (will prompt for ID and name)\n"
+                                " p - Request presets report\n"
+                                " d - Perform noon daily capture sequence\n"
+                                " m - Perform midnight daily capture sequence\n"
+                                " --help - Show this help message")
             else:
                 logging.info(f"Unknown command: {line} (try: up/down/left/right, 0-8, r/z/s/b/a)")
 
