@@ -25,6 +25,8 @@ https://docs.docker.com/engine/install/
 
 ### Neolink
 
+https://github.com/QuantumEntangledAndy/neolink
+
 - **Ubuntu/Debian**: 
 
 ```bash
