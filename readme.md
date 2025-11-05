@@ -1,6 +1,6 @@
 # RTSP-MQTT Connection using Neolink for Daily Image Capture Automation of Tambopata Tower's Surveillance Camera
 
-This project is compiling a compose container that includes a Neolink, Mosquitto MQTT Broker, and Python MQTT Client services. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will be able to communicate to the users (as the MQTT client) through the MQTT Broker. 
+This project is compiling a compose container that includes a Neolink, Mosquitto MQTT Broker, and Python MQTT Client services. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will be able to communicate with the users (as the MQTT client) through the MQTT Broker. 
 
 The client already has a scheduler loop that runs in the background to automatically capture images from different PTZ presets every noon. In addition to that, some manual controls are possible.
 
