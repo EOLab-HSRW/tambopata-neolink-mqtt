@@ -1,21 +1,23 @@
-# Neolink
+# RTSP-MQTT Connection using Neolink for Daily Image Capture Automation of Tambopata Tower's Surveillance Camera
 
-![CI](https://github.com/QuantumEntangledAndy/neolink/workflows/CI/badge.svg)
-[![dependency status](https://deps.rs/repo/github/QuantumEntangledAndy/neolink/status.svg)](https://deps.rs/repo/github/QuantumEntangledAndy/neolink)
+This project is compiling a compose container that includes a Neolink, Mosquitto MQTT Broker, and Python MQTT Client services. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will be able to communicate to the users (as the MQTT client) through the MQTT Broker. 
 
-Neolink is a small program that acts as a proxy between Reolink IP cameras and
-normal RTSP clients.
-Certain cameras, such as the Reolink B800, do not implement ONVIF or RTSP, but
-instead use a proprietary "Baichuan" protocol only compatible with their apps
-and NVRs (any camera that uses "port 9000" will likely be using this protocol).
-Neolink allows you to use NVR software such as Shinobi or Blue Iris to receive
-video from these cameras instead.
-The Reolink NVR is not required, and the cameras are unmodified.
-Your NVR software connects to Neolink, which forwards the video stream from the
-camera.
+List of commands available:
 
-The Neolink project is not affiliated with Reolink in any way; everything it
-does has been reverse engineered.
+```bash
+Commands:                       " up/down/left/right - PTZ control "
+                                " z - Cycle zoom levels (1x/2x/3.5x) "
+                                " a - Assign current position to a preset (will prompt for ID and name) "
+                                " 0-8 - Go to PTZ preset position "
+                                " r - Toggle IR mode (auto/on/off) "
+                                " s - Trigger snapshot on both lenses "
+                                " b - Query battery level "
+                                " p - Request presets report "
+                                " c - Configure preset range for the daily capture sequence "
+                                " d - Perform custom daily capture sequence "
+                                " help - Show this help message "
+```
+
 
 ## Setup 
 
@@ -45,7 +47,7 @@ sudo apt install \
 
 2. Clone this repo
 
-3. the MQTT Broker container will expect this file to exist, we can use the touch command to create an empty file.
+3. the Mosquitto MQTT Broker container will expect this file to exist, we can use the touch command to create an empty file.
 
 ```bash
 sudo touch ./mqtt/config/pwfile

@@ -70,6 +70,8 @@ interactive_event = Event()  # To pause stdin_loop during interactive inputs
 wakeup_sent = False # To avoid multiple wakeup commands
 current_event = None # 'midnight' or 'noon' during daily capture sequences
 current_preset = None # Current preset being processed during daily capture sequences
+start_preset = 0
+end_preset = 3
 
 def connect_mqtt(broker, port, client_id, username=None, password=None):
     def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -291,10 +293,46 @@ async def process_commands(client, command_queue):
                 query_battery(client)
             elif cmd_type == 'presets_report':
                 request_presets_report(client)
-            elif cmd_type == 'daily_capture_noon':
-                await perform_daily_capture(client, False)
-            elif cmd_type == 'daily_capture_midnight':
-                await perform_daily_capture(client, True)
+            elif cmd_type == 'configure_preset_range':
+                interactive_event.set()
+                try:
+                    start_future = loop.run_in_executor(None, input, "Enter start preset ID (default 0): ")
+                    start_str = (await start_future).strip()
+                    end_future = loop.run_in_executor(None, input, "Enter end preset ID (default 3): ")
+                    end_str = (await end_future).strip()
+                    try:
+                        global start_preset, end_preset
+                        start_preset = int(start_str) if start_str else 0
+                        end_preset = int(end_str) if end_str else 3
+                        if start_preset > end_preset:
+                            logging.warning("Start preset > end preset; swapping.")
+                            start_preset, end_preset = end_preset, start_preset
+                        logging.info(f"Configured preset range: {start_preset} to {end_preset}")
+                    except ValueError:
+                        logging.error("Invalid preset values. Must be integers.")
+                finally:
+                    interactive_event.clear()
+            elif cmd_type == 'custom_capture':
+                interactive_event.set()
+                try:
+                    event_future = loop.run_in_executor(None, input, "Event type (noon/midnight): ")
+                    event_str = (await event_future).strip().lower()
+                    is_midnight = event_str == 'midnight'
+                    start_future = loop.run_in_executor(None, input, "Start preset (default 0): ")
+                    start_str = (await start_future).strip()
+                    end_future = loop.run_in_executor(None, input, "End preset (default 3): ")
+                    end_str = (await end_future).strip()
+                    try:
+                        start_preset = int(start_str) if start_str else 0
+                        end_preset = int(end_str) if end_str else 3
+                        if start_preset > end_preset:
+                            logging.warning("Start preset > end preset; swapping.")
+                            start_preset, end_preset = end_preset, start_preset
+                        await perform_daily_capture(client, is_midnight, start_preset, end_preset)
+                    except ValueError:
+                        logging.error("Invalid preset values. Must be integers.")
+                finally:
+                    interactive_event.clear()
             elif cmd_type == 'assign':
                 interactive_event.set()  #Pause stdin_loop during interactive input
                 try:
@@ -316,9 +354,9 @@ async def process_commands(client, command_queue):
 def stdin_loop(command_queue: Queue):
     """Reads keys/lines from stdin non-blockingly and enqueues commands."""
     global interactive_event
-    logging.info("Stdin listener started. Type '--help' and press Enter for commands list.")
+    logging.info("Stdin listener started. Type 'help' and press Enter for commands list.")
     while True:
-        # Skip reading if interactive input is active (e.g., during 'assign' prompts)
+        # Skip reading if interactive input is active (during 'assign' prompts)
         if interactive_event.is_set():
             time.sleep(0.1)
             continue
@@ -355,31 +393,31 @@ def stdin_loop(command_queue: Queue):
                 command_queue.put(('presets_report',))
                 logging.info("Enqueued presets report request")
             elif line == 'd':
-                command_queue.put(('daily_capture_noon',))
-                logging.info("Enqueued noon daily capture sequence")
-            elif line == 'm':
-                command_queue.put(('daily_capture_midnight',))
-                logging.info("Enqueued midnight daily capture sequence")
-            elif line == '--help':
+                command_queue.put(('custom_daily_capture',))
+                logging.info("Enqueued custom daily capture sequence")
+            elif line == 'c':
+                command_queue.put(('configure_preset_range',))
+                logging.info("Enqueued configure preset range")
+            elif line == 'help':
                 logging.info("Commands:\n"
                                 " up/down/left/right - PTZ control\n"
+                                " z - Cycle zoom levels (1x/2x/3.5x)\n"
+                                " a - Assign current position to a preset (will prompt for ID and name)\n"
                                 " 0-8 - Go to PTZ preset position\n"
                                 " r - Toggle IR mode (auto/on/off)\n"
-                                " z - Cycle zoom levels (1x/2x/3.5x)\n"
                                 " s - Trigger snapshot on both lenses\n"
                                 " b - Query battery level\n"
-                                " a - Assign preset (will prompt for ID and name)\n"
                                 " p - Request presets report\n"
-                                " d - Perform noon daily capture sequence\n"
-                                " m - Perform midnight daily capture sequence\n"
-                                " --help - Show this help message")
+                                " c - Configure preset range for the daily capture sequence\n"
+                                " d - Perform custom daily capture sequence\n"
+                                " help - Show this help message")
             else:
-                logging.info(f"Unknown command: {line} (try: up/down/left/right, 0-8, r/z/s/b/a)")
+                logging.info(f"Unknown command: {line} (try: 'help' for list of commands)")
 
 
-async def perform_daily_capture(client, event_type: bool):
+async def perform_daily_capture(client, event_type: bool, start: int = start_preset, end: int = end_preset):
     """Perform the daily capture sequence: battery query, go to presets 0-3, snapshot each."""
-    global current_event, current_preset
+    global current_event, current_preset, start_preset, end_preset
     if event_type:  # Midnight event
         current_event = 'midnight'
         set_ir_control(client, 'on')
@@ -388,7 +426,7 @@ async def perform_daily_capture(client, event_type: bool):
         current_event = 'noon'
     query_battery(client)
     await asyncio.sleep(2)
-    for i in range(4):
+    for i in range(start, end + 1):
         current_preset = i
         go_to_preset(client, i)
         await asyncio.sleep(5)
@@ -399,7 +437,7 @@ async def perform_daily_capture(client, event_type: bool):
     set_ir_control(client, 'auto')
 
 def time_to_next_noon():
-    """Seconds until local 12:00 noon (since camera +5h)."""
+    """Seconds until local 12:00 noon (since camera is in UTC time)."""
     now = datetime.now()
     next_noon = now.replace(hour=17, minute=0, second=0, microsecond=0)
     if now >= next_noon:
@@ -407,7 +445,7 @@ def time_to_next_noon():
     return (next_noon - now).total_seconds()
 
 def time_to_next_midnight():
-    """Seconds until local 00:00 midnight (since camera +5h)."""
+    """Seconds until local 00:00 midnight (since camera is in UTC time)."""
     now = datetime.now()
     next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
     if now >= next_midnight:
@@ -415,6 +453,7 @@ def time_to_next_midnight():
     return (next_midnight - now).total_seconds()
 
 async def scheduler(client):
+    global start_preset, end_preset
     while True:
         delta_noon = time_to_next_noon()
         delta_midnight = time_to_next_midnight()
@@ -426,12 +465,12 @@ async def scheduler(client):
             logging.info("Midnight reached — IR ON + capture sequence")
             wakeup_both_lenses(client)
             await asyncio.sleep(20)
-            await perform_daily_capture(client, is_midnight_event)
+            await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
         else:
             logging.info("Noon reached — capture sequence")
             wakeup_both_lenses(client)
             await asyncio.sleep(20)
-            await perform_daily_capture(client, is_midnight_event)
+            await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
 
 async def main():
     global ir_mode, zoom_index
