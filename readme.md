@@ -2,6 +2,8 @@
 
 This project is compiling a compose container that includes a Neolink, Mosquitto MQTT Broker, and Python MQTT Client services. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will be able to communicate to the users (as the MQTT client) through the MQTT Broker. 
 
+The client already has a scheduler loop that runs in the background to automatically capture images from different PTZ presets every noon. In addition to that, some manual controls are possible.
+
 List of commands available:
 
 ```bash
@@ -17,7 +19,6 @@ Commands:                       " up/down/left/right - PTZ control "
                                 " d - Perform custom daily capture sequence "
                                 " help - Show this help message "
 ```
-
 
 ## Setup 
 
@@ -43,7 +44,7 @@ sudo apt install \
   libssl-dev
 ```
 
-### Compose Container
+### Docker Compose Container
 
 1. Create new directory and cd to it
 
