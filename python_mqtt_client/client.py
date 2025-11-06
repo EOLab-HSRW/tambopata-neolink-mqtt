@@ -345,7 +345,7 @@ async def process_commands(client, command_queue):
             elif cmd_type == 'custom_capture':
                 interactive_event.set()
                 try:
-                    event_future = loop.run_in_executor(None, input, "Event type (noon/midnight): ")
+                    event_future = loop.run_in_executor(None, input, "Event type (if 'noon' -> snapshot in both infrared mode | if midnight -> snapshot only in infrared ON): ")
                     event_str = (await event_future).strip().lower()
                     is_midnight = event_str == 'midnight'
                     start_future = loop.run_in_executor(None, input, "Start preset (default 0): ")
@@ -489,33 +489,44 @@ def time_to_next_noon():
         next_noon += timedelta(days=1)
     return (next_noon - now).total_seconds()
 
-def time_to_next_midnight():
-    """Seconds until local 00:00 midnight (since camera is in UTC time)."""
-    now = datetime.now()
-    next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
-    if now >= next_midnight:
-        next_midnight += timedelta(days=1)
-    return (next_midnight - now).total_seconds()
+# def time_to_next_midnight():
+#     """Seconds until local 00:00 midnight (since camera is in UTC time)."""
+#     now = datetime.now()
+#     next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
+#     if now >= next_midnight:
+#         next_midnight += timedelta(days=1)
+#     return (next_midnight - now).total_seconds()
 
 async def scheduler(client):
     global start_preset, end_preset
     while True:
         delta_noon = time_to_next_noon()
-        delta_midnight = time_to_next_midnight()
-        sleep_delta = min(delta_noon, delta_midnight)
-        is_midnight_event = delta_midnight <= delta_noon
-        logging.info(f"Next capture in {sleep_delta / 3600:.2f} hours (event: {'midnight' if is_midnight_event else 'noon'})")
-        await asyncio.sleep(sleep_delta)
-        if is_midnight_event:
-            logging.info("Midnight reached — IR ON + capture sequence")
-            wakeup_both_lenses(client)
-            await asyncio.sleep(20)
-            await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
-        else:
-            logging.info("Noon reached — capture sequence")
-            wakeup_both_lenses(client)
-            await asyncio.sleep(20)
-            await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
+        is_midnight_event = False
+        logging.info(f"Next capture in {delta_noon / 3600:.2f} hours")
+        await asyncio.sleep(delta_noon)
+
+        logging.info("Noon reached — capture sequence starting")
+        wakeup_both_lenses(client)
+        await asyncio.sleep(20)
+        await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
+
+        # delta_noon = time_to_next_noon()
+        # delta_midnight = time_to_next_midnight()
+        # sleep_delta = min(delta_noon, delta_midnight)
+        # is_midnight_event = delta_midnight <= delta_noon
+        # logging.info(f"Next capture in {sleep_delta / 3600:.2f} hours (event: {'midnight' if is_midnight_event else 'noon'})")
+        # await asyncio.sleep(sleep_delta)
+            
+        # if is_midnight_event:
+        #     logging.info("Midnight reached — IR ON + capture sequence")
+        #     wakeup_both_lenses(client)
+        #     await asyncio.sleep(20)
+        #     await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
+        # else:
+        #     logging.info("Noon reached — capture sequence")
+        #     wakeup_both_lenses(client)
+        #     await asyncio.sleep(20)
+        #     await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
 
 async def main():
     global ir_mode, zoom_index
