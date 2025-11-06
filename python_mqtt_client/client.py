@@ -467,6 +467,9 @@ async def perform_daily_capture(client, event_type: bool, start: int = start_pre
         current_event = 'noon'
         for i in range(start, end + 1):
             current_preset = i
+            set_ir_control(client, 'off')
+            ir_mode = 'off'
+            await asyncio.sleep(2)
             go_to_preset(client, i)
             await asyncio.sleep(2)
             trigger_snapshot(client)
@@ -476,6 +479,7 @@ async def perform_daily_capture(client, event_type: bool, start: int = start_pre
             await asyncio.sleep(2)
             trigger_snapshot(client)
             await asyncio.sleep(30)
+            
     current_event = None
     current_preset = None
     set_ir_control(client, 'auto')
