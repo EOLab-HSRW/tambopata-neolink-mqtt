@@ -96,22 +96,48 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
         logging.info(f"Disconnected with reason code: {reason_code} (flags: {flags})")
 
     def on_message(client, userdata, msg):
-        global current_event, current_preset
+        global current_event, current_preset, ir_mode
         if "preview" in msg.topic:
             if msg.retain:  # Skip retained messages (e.g., last preview on subscribe)
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
                 return
             try:
-                raw = msg.payload.decode(errors="ignore").strip()
-                if raw.startswith("data:image"):
-                    # data URI
-                    b64 = raw.split(",", 1)[1]
-                else:
-                    b64 = raw
-                # remove possible surrounding quotes
-                if b64.startswith('"') and b64.endswith('"'):
-                    b64 = b64[1:-1]
-                img_bytes = base64.b64decode(b64)
+                payload_len = len(msg.payload)
+                if payload_len < 4:
+                    logging.warning(f"Preview payload too short ({payload_len} bytes) for {msg.topic}")
+                    return
+
+                # Treat as raw bytes first (common for binary base64)
+                b64_bytes = msg.payload
+
+                # If it starts with data URI, extract (but decode URI part only)
+                payload_str = None
+                try:
+                    payload_str = msg.payload.decode('ascii', errors='replace').strip()
+                    if payload_str.startswith("data:image"):
+                        # Extract base64 part, decode to bytes
+                        b64_str = payload_str.split(",", 1)[1]
+                        b64_bytes = b64_str.encode('ascii', errors='ignore')
+                    # Strip quotes if present
+                    b64_str = b64_bytes.decode('ascii', errors='ignore')
+                    if b64_str.startswith('"') and b64_str.endswith('"'):
+                        b64_bytes = b64_str[1:-1].encode('ascii', errors='ignore')
+                except:
+                    # Fallback: Raw bytes as-is (no URI)
+                    pass
+
+                # Fix length/padding: Truncate to multiple of 4, then add pads
+                b64_str = b64_bytes.decode('ascii', errors='ignore').rstrip('=')
+                b64_len = len(b64_str)
+                truncate_by = b64_len % 4
+                if truncate_by != 0:
+                    b64_str = b64_str[:-truncate_by]  # Drop excess to make %4 == 0
+                    logging.warning(f"Truncated {truncate_by} excess chars in base64 for {msg.topic} (new len={len(b64_str)})")
+                missing_pads = (4 - len(b64_str) % 4) % 4
+                b64_str += '=' * missing_pads
+                img_bytes = base64.b64decode(b64_str)
+
+                # Save image with date-based subdirectory
                 now = datetime.now()
                 date_str = now.strftime("%d.%m.%Y")
                 timestamp = now.strftime("%H-%M-%S")   
@@ -120,12 +146,15 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
                 # Include event and preset if in daily capture mode, else just timestamp
                 if current_event and current_preset is not None:
-                    filename = os.path.join(subdir, f"lens{lens_id}_{current_event}_preset{current_preset}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"lens{lens_id}_{current_event}_infrared-{ir_mode}_preset{current_preset}_{timestamp}.jpg")
                 else:
-                    filename = os.path.join(subdir, f"lens{lens_id}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"lens{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
                 logging.info(f"Saved snapshot: {filename}")
+            except base64.binascii.Error as e:
+                # Specific base64 errors (padding/length)
+                logging.error(f"Base64 decode failed for {msg.topic} (len={len(msg.payload)}): {e}. Payload preview: {msg.payload[:50].hex()}...")
             except Exception as e:
                 logging.error(f"Failed to decode image from {msg.topic}: {e}")
         elif msg.topic == battery_level_topic:
@@ -296,12 +325,13 @@ async def process_commands(client, command_queue):
             elif cmd_type == 'configure_preset_range':
                 interactive_event.set()
                 try:
-                    start_future = loop.run_in_executor(None, input, "Enter start preset ID (default 0): ")
+                    global start_preset, end_preset
+                    logging.info(f"Current preset range: {start_preset} to {end_preset} (default)")
+                    start_future = loop.run_in_executor(None, input, "Enter start preset ID: ")
                     start_str = (await start_future).strip()
-                    end_future = loop.run_in_executor(None, input, "Enter end preset ID (default 3): ")
+                    end_future = loop.run_in_executor(None, input, "Enter end preset ID: ")
                     end_str = (await end_future).strip()
                     try:
-                        global start_preset, end_preset
                         start_preset = int(start_str) if start_str else 0
                         end_preset = int(end_str) if end_str else 3
                         if start_preset > end_preset:
@@ -393,8 +423,8 @@ def stdin_loop(command_queue: Queue):
                 command_queue.put(('presets_report',))
                 logging.info("Enqueued presets report request")
             elif line == 'd':
-                command_queue.put(('custom_daily_capture',))
-                logging.info("Enqueued custom daily capture sequence")
+                command_queue.put(('custom_capture',))
+                logging.info("Enqueued custom capture sequence")
             elif line == 'c':
                 command_queue.put(('configure_preset_range',))
                 logging.info("Enqueued configure preset range")
@@ -416,25 +446,40 @@ def stdin_loop(command_queue: Queue):
 
 
 async def perform_daily_capture(client, event_type: bool, start: int = start_preset, end: int = end_preset):
-    """Perform the daily capture sequence: battery query, go to presets 0-3, snapshot each."""
-    global current_event, current_preset, start_preset, end_preset
+    """Perform the daily capture sequence: battery query, go to the configured presets, snapshot each."""
+    global current_event, current_preset, start_preset, end_preset, ir_mode
+    query_battery(client)
+    await asyncio.sleep(2)
+
     if event_type:  # Midnight event
         current_event = 'midnight'
         set_ir_control(client, 'on')
-        await asyncio.sleep(5)
+        ir_mode = 'on'
+        await asyncio.sleep(2)
+    
+        for i in range(start, end + 1):
+            current_preset = i
+            go_to_preset(client, i)
+            await asyncio.sleep(5)
+            trigger_snapshot(client)
+            await asyncio.sleep(30)
     else:
         current_event = 'noon'
-    query_battery(client)
-    await asyncio.sleep(2)
-    for i in range(start, end + 1):
-        current_preset = i
-        go_to_preset(client, i)
-        await asyncio.sleep(5)
-        trigger_snapshot(client)
-        await asyncio.sleep(30)
+        for i in range(start, end + 1):
+            current_preset = i
+            go_to_preset(client, i)
+            await asyncio.sleep(2)
+            trigger_snapshot(client)
+            await asyncio.sleep(30)
+            set_ir_control(client, 'on')
+            ir_mode = 'on'
+            await asyncio.sleep(2)
+            trigger_snapshot(client)
+            await asyncio.sleep(30)
     current_event = None
     current_preset = None
     set_ir_control(client, 'auto')
+    ir_mode = 'auto'
 
 def time_to_next_noon():
     """Seconds until local 12:00 noon (since camera is in UTC time)."""
