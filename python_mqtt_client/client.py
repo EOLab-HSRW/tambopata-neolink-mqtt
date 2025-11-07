@@ -107,7 +107,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                     logging.warning(f"Preview payload too short ({payload_len} bytes) for {msg.topic}")
                     return
 
-                # Treat as raw bytes first (common for binary base64)
+                # Treat as raw bytes first
                 b64_bytes = msg.payload
 
                 # If it starts with data URI, extract (but decode URI part only)
@@ -146,9 +146,9 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
                 # Include event and preset if in daily capture mode, else just timestamp
                 if current_event and current_preset is not None:
-                    filename = os.path.join(subdir, f"lens{lens_id}_{current_event}_infrared-{ir_mode}_preset{current_preset}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"t-{lens_id}_ir-{ir_mode}_p-{current_preset}_{timestamp}.jpg")
                 else:
-                    filename = os.path.join(subdir, f"lens{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"USERNAME-{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
                 logging.info(f"Saved snapshot: {filename}")
