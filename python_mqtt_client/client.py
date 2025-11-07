@@ -146,7 +146,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
                 # Include event and preset if in daily capture mode, else just timestamp
                 if current_event and current_preset is not None:
-                    filename = os.path.join(subdir, f"t-{lens_id}_ir-{ir_mode}_p-{current_preset}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"t{lens_id}_{ir_mode}_p{current_preset}_{timestamp}.jpg")
                 else:
                     filename = os.path.join(subdir, f"USERNAME-{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
