@@ -53,10 +53,10 @@ sudo apt install \
 3. the Mosquitto MQTT Broker container will expect this file to exist, we can use the touch command to create an empty file.
 
 ```bash
-sudo touch ./mqtt/config/pwfile
+touch ./mqtt/config/pwfile
 ```
 
-4. Once the file is created our next step is to change the files permissions to “0700” as expected the MQTT software.
+4. Once the file is created our next step is to change the files permissions to “0700” as expected by the MQTT software.
 
 ```bash
 sudo chmod 0700 ./mqtt/config/pwfile
