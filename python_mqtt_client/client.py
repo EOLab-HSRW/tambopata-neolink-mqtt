@@ -102,40 +102,57 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
                 return
             try:
-                payload_len = len(msg.payload)
-                if payload_len < 4:
+                payload_bytes = msg.payload
+                payload_len = len(payload_bytes)
+                if payload_len < 10:  # Min JPEG size
                     logging.warning(f"Preview payload too short ({payload_len} bytes) for {msg.topic}")
                     return
 
-                # Treat as raw bytes first
-                b64_bytes = msg.payload
+                # Priority 1: Check for raw JPEG (binary, no base64)
+                if payload_bytes.startswith(b'\xff\xd8\xff'):
+                    logging.info(f"Raw JPEG detected for {msg.topic} (len={payload_len})")
+                    img_bytes = payload_bytes
+                else:
+                    # Priority 2: Try as base64 (string decode only if needed)
+                    b64_str = None
+                    try:
+                        # Safe decode to str for base64/URI
+                        raw_str = payload_bytes.decode('ascii', errors='replace')
+                        raw_str = raw_str.strip()
 
-                # If it starts with data URI, extract (but decode URI part only)
-                payload_str = None
-                try:
-                    payload_str = msg.payload.decode('ascii', errors='replace').strip()
-                    if payload_str.startswith("data:image"):
-                        # Extract base64 part, decode to bytes
-                        b64_str = payload_str.split(",", 1)[1]
-                        b64_bytes = b64_str.encode('ascii', errors='ignore')
-                    # Strip quotes if present
-                    b64_str = b64_bytes.decode('ascii', errors='ignore')
-                    if b64_str.startswith('"') and b64_str.endswith('"'):
-                        b64_bytes = b64_str[1:-1].encode('ascii', errors='ignore')
-                except:
-                    # Fallback: Raw bytes as-is (no URI)
-                    pass
+                        if raw_str.startswith("data:image"):
+                            b64_str = raw_str.split(",", 1)[1]
+                        else:
+                            b64_str = raw_str
 
-                # Fix length/padding: Truncate to multiple of 4, then add pads
-                b64_str = b64_bytes.decode('ascii', errors='ignore').rstrip('=')
-                b64_len = len(b64_str)
-                truncate_by = b64_len % 4
-                if truncate_by != 0:
-                    b64_str = b64_str[:-truncate_by]  # Drop excess to make %4 == 0
-                    logging.warning(f"Truncated {truncate_by} excess chars in base64 for {msg.topic} (new len={len(b64_str)})")
-                missing_pads = (4 - len(b64_str) % 4) % 4
-                b64_str += '=' * missing_pads
-                img_bytes = base64.b64decode(b64_str)
+                        # Clean quotes
+                        if b64_str.startswith('"') and b64_str.endswith('"'):
+                            b64_str = b64_str[1:-1]
+
+                        # Fix padding/length
+                        b64_str = b64_str.rstrip('=')
+                        b64_len = len(b64_str)
+                        truncate_by = b64_len % 4
+                        if truncate_by != 0:
+                            b64_str = b64_str[:-truncate_by]
+                            logging.warning(f"Truncated {truncate_by} chars in base64 for {msg.topic} (new len={len(b64_str)})")
+                        missing_pads = (4 - len(b64_str) % 4) % 4
+                        b64_str += '=' * missing_pads
+
+                        # Decode
+                        img_bytes = base64.b64decode(b64_str)
+                    except (UnicodeDecodeError, base64.binascii.Error, ValueError) as e:
+                        # Final fallback: Treat entire payload as base64 bytes (ignore errors)
+                        logging.warning(f"Base64 fallback failed for {msg.topic}; trying raw payload as base64 (len={payload_len}): {e}")
+                        # Pad raw bytes to 4-multiple if needed
+                        raw_b64_len = payload_len
+                        truncate_by = raw_b64_len % 4
+                        if truncate_by != 0:
+                            payload_bytes = payload_bytes[:-truncate_by]
+                        # Add pads as bytes
+                        pads_needed = (4 - len(payload_bytes) % 4) % 4
+                        padded_bytes = payload_bytes + b'=' * pads_needed
+                        img_bytes = base64.b64decode(padded_bytes, validate=False)  # Ignore padding errors
 
                 # Save image with date-based subdirectory
                 now = datetime.now()
@@ -151,12 +168,9 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                     filename = os.path.join(subdir, f"USERNAME-{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
-                logging.info(f"Saved snapshot: {filename}")
-            except base64.binascii.Error as e:
-                # Specific base64 errors (padding/length)
-                logging.error(f"Base64 decode failed for {msg.topic} (len={len(msg.payload)}): {e}. Payload preview: {msg.payload[:50].hex()}...")
+                logging.info(f"Saved snapshot: {filename} (processed {payload_len} bytes)")
             except Exception as e:
-                logging.error(f"Failed to decode image from {msg.topic}: {e}")
+                logging.error(f"Failed to decode/save image from {msg.topic} (len={len(msg.payload)}): {e}. Hex preview: {msg.payload[:50].hex()}...")
         elif msg.topic == battery_level_topic:
             level = msg.payload.decode()
             logging.info(f"Battery level: {level}%")
