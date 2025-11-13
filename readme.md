@@ -2,47 +2,21 @@
 
 This project compiles Neolink, Mosquitto MQTT Broker, and Python MQTT Client services in a Docker compose container. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will communicate with the client through the MQTT Broker. 
 
-The client has a scheduler loop that runs in the background to automatically capture images from different PTZ presets every noon (12.00) both when the infrared light is on and off. In addition to that, some manual controls are possible with stdinput commands.
-
-List of available commands:
-
-```bash
-Commands:                       " up/down/left/right - PTZ control "
-                                " z - Cycle zoom levels (1x/2x/3.5x) "
-                                " a - Assign current position to a preset (will prompt for ID and name) "
-                                " 0-8 - Go to PTZ preset position "
-                                " r - Toggle IR mode (auto/on/off) "
-                                " s - Trigger snapshot on both lenses "
-                                " b - Query battery level "
-                                " p - Request presets report "
-                                " c - Configure preset range for the daily capture sequence "
-                                " d - Perform custom daily capture sequence "
-                                " help - Show this help message "
-```
+The client has a scheduler loop that runs in the background to automatically capture images from different PTZ presets every noon (12.00) both when the infrared light is on and off. In addition to that, some manual controls are possible with stdinput commands when you attach to the client container.
 
 ## Setup 
 
-### Docker
+### Docker Installataion
+
+Follow the instruction from the link below based on your operating system:
 
 https://docs.docker.com/engine/install/
 
-### Neolink
+### OpenVPN Connect
 
-https://github.com/QuantumEntangledAndy/neolink
+Some devices that are connected to the university's WiFi require a VPN to access the reolink cameras with neolink. Follow the instruction from the link below and contact the responsible person from the lab:
 
-- **Ubuntu/Debian**: 
-
-```bash
-sudo apt install \
-  libgstrtspserver-1.0-0 \
-  libgstreamer1.0-0 \
-  libgstreamer-plugins-bad1.0-0 \
-  gstreamer1.0-x \
-  gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad \
-  libssl-dev
-```
+https://wiki.eolab.de/doku.php?id=snapcon2022:openvpn-connection&s[]=vpn
 
 ### Docker Compose Container
 
@@ -50,13 +24,17 @@ sudo apt install \
 
 2. Clone this repo
 
-3. the Mosquitto MQTT Broker container will expect this file to exist, we can use the touch command to create an empty file.
+```bash
+git clone https://github.com/EOLab-HSRW/USERNAME-neolink-mqtt.git
+```
+
+3. the Mosquitto MQTT Broker service will expect this file to exist, we can use the touch command to create an empty file
 
 ```bash
 touch ./mqtt/config/pwfile
 ```
 
-4. Once the file is created our next step is to change the files permissions to “0700” as expected by the MQTT software.
+4. Once the file is created our next step is to change the files permissions to “0700” as expected by the service
 
 ```bash
 sudo chmod 0700 ./mqtt/config/pwfile
@@ -74,7 +52,7 @@ Then attach to the MQTT Broker container
 docker compose exec mosquitto sh
 ```
 
-6. Create new mosquitto user
+6. Create a new mosquitto user
 
 ```bash
 mosquitto_passwd -c /mosquitto/config/pwfile USERNAME
@@ -99,18 +77,45 @@ exit
 docker compose restart
 ```
 
-8. Attach to the MQTT Client container 
+### Accessing Manual Controls
+
+You can access manual controls of the camera with stdinput commands provided by the MQTT Client. Simply attach to the MQTT Client container with:
 
 ```bash
 docker compose exec mqtt-client sh
 ```
 
-Finally, run the client with:
+Then run the client with:
 
 ```bash
 python client.py
 ```
+List of available commands:
 
-**Make sure you are connected to the VPN if using university's WiFi**
+```bash
+Commands:                       " up/down/left/right - PTZ control "
+                                " z - Cycle zoom levels (1x/2x/3.5x) "
+                                " a - Assign current position to a preset (will prompt for ID and name) "
+                                " 0-8 - Go to PTZ preset position "
+                                " r - Toggle IR mode (auto/on/off) "
+                                " s - Trigger snapshot on both lenses "
+                                " b - Query battery level "
+                                " p - Request presets report "
+                                " c - Configure preset range for the daily capture sequence "
+                                " d - Perform custom daily capture sequence "
+                                " help - Show this help message "
+```
 
-https://wiki.eolab.de/doku.php?id=snapcon2022:openvpn-connection&s[]=vpn
+## References
+
+### Neolink
+
+https://github.com/QuantumEntangledAndy/neolink
+
+### Paho Python MQTT Client
+
+https://eclipse.dev/paho/files/paho.mqtt.python/html/index.html
+
+### Mosquitto Local MQTT Broker
+
+https://mosquitto.org/
