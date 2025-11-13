@@ -41,6 +41,7 @@ services:
       - mqtt_default
     depends_on:
       - mosquitto
+    restart: unless-stopped
     stdin_open: true
     tty: true
 
