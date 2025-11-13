@@ -6,4 +6,6 @@ COPY ./python_mqtt_client/requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY ./python_mqtt_client/client.py .
+
 CMD ["python", "client.py"]
