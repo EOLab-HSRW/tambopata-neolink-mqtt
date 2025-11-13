@@ -35,11 +35,7 @@ services:
     container_name: mqtt-client
     volumes:
       - ./python_mqtt_client:/app/python_mqtt_client
-      # - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
-      # - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
-      # - DISPLAY=$DISPLAY
-      # - XAUTHORITY=/tmp/.docker.xauth
       - ENABLE_KEYBOARD=true
     networks:
       - mqtt_default
