@@ -34,13 +34,13 @@ git clone https://github.com/EOLab-HSRW/USERNAME-neolink-mqtt.git
 touch ./mqtt/config/pwfile
 ```
 
-4. Once the file is created our next step is to change the files permissions to “0700” as expected by the service
+Then change the file permission to “0700” as expected by the service
 
 ```bash
 sudo chmod 0700 ./mqtt/config/pwfile
 ```
 
-5. Run the compose container detached
+4. Run the compose container detached
 
 ```bash
 docker compose up -d
@@ -52,7 +52,7 @@ Then attach to the MQTT Broker container
 docker compose exec mosquitto sh
 ```
 
-6. Create a new mosquitto user
+5. Create a new mosquitto user
 
 ```bash
 mosquitto_passwd -c /mosquitto/config/pwfile USERNAME
@@ -71,7 +71,7 @@ Then exit the bash
 exit
 ```
 
-7. Restart the compose container
+6. Restart the compose container
 
 ```bash
 docker compose restart
