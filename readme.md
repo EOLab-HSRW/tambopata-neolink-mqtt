@@ -6,7 +6,7 @@ The client has a scheduler loop that runs in the background to automatically cap
 
 ## Setup 
 
-### Docker Installataion
+### Docker Installation
 
 Follow the instruction from the link below based on your operating system:
 
