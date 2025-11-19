@@ -68,8 +68,8 @@ zoom_levels = [1.0, 2.0, 3.5]
 zoom_index = 0
 interactive_event = Event()  # To pause stdin_loop during interactive inputs
 wakeup_sent = False # To avoid multiple wakeup commands
-current_event = None # 'midnight' or 'noon' during daily capture sequences
-current_preset = None # Current preset being processed during daily capture sequences
+is_capture_sequence = False # Flag for daily capture sequence
+current_preset = None # Current PTZ position
 start_preset = 0
 end_preset = 3
 
@@ -96,7 +96,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
         logging.info(f"Disconnected with reason code: {reason_code} (flags: {flags})")
 
     def on_message(client, userdata, msg):
-        global current_event, current_preset, ir_mode
+        global is_capture_sequence, current_preset, ir_mode
         if "preview" in msg.topic:
             if msg.retain:  # Skip retained messages (e.g., last preview on subscribe)
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
@@ -161,11 +161,12 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 lens_id = "0" if lens_0_name in msg.topic else "1"
                 subdir = os.path.join(save_dir, date_str)
                 os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
+
                 # Include event and preset if in daily capture mode, else just timestamp
-                if current_event and current_preset is not None:
+                if is_capture_sequence:
                     filename = os.path.join(subdir, f"t{lens_id}_{ir_mode}_p{current_preset}_{timestamp}.jpg")
                 else:
-                    filename = os.path.join(subdir, f"USERNAME-{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
+                    filename = os.path.join(subdir, f"USERNAME{lens_id}_infrared-{ir_mode}_preset-{current_preset}_{timestamp}.jpg")
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
                 logging.info(f"Saved snapshot: {filename} (processed {payload_len} bytes)")
@@ -289,7 +290,7 @@ def wakeup_both_lenses(client, minutes=10):
         logging.warning(f"Failed to send wakeup command to {wakeup_topic_1}, rc={result_1.rc}")
 
 async def process_commands(client, command_queue):
-    global ir_mode, zoom_index, interactive_event, wakeup_sent
+    global ir_mode, zoom_index, interactive_event, wakeup_sent, current_preset
     loop = asyncio.get_event_loop()
     while True:
         try:
@@ -320,6 +321,7 @@ async def process_commands(client, command_queue):
             elif cmd_type == 'preset':
                 preset_id = cmd[1]
                 go_to_preset(client, preset_id)
+                current_preset = preset_id
             elif cmd_type == 'ir_toggle':
                 modes = ['auto', 'on', 'off']
                 current_idx = modes.index(ir_mode)
@@ -359,9 +361,8 @@ async def process_commands(client, command_queue):
             elif cmd_type == 'custom_capture':
                 interactive_event.set()
                 try:
-                    event_future = loop.run_in_executor(None, input, "Event type (if 'noon' -> snapshot in both infrared mode | if midnight -> snapshot only in infrared ON): ")
+                    event_future = loop.run_in_executor(None, input, "Event type (on/off/alt for alternate): ")
                     event_str = (await event_future).strip().lower()
-                    is_midnight = event_str == 'midnight'
                     start_future = loop.run_in_executor(None, input, "Start preset (default 0): ")
                     start_str = (await start_future).strip()
                     end_future = loop.run_in_executor(None, input, "End preset (default 3): ")
@@ -372,7 +373,7 @@ async def process_commands(client, command_queue):
                         if start_preset > end_preset:
                             logging.warning("Start preset > end preset; swapping.")
                             start_preset, end_preset = end_preset, start_preset
-                        await perform_daily_capture(client, is_midnight, start_preset, end_preset)
+                        await perform_daily_capture(client, event_str, start_preset, end_preset)
                     except ValueError:
                         logging.error("Invalid preset values. Must be integers.")
                 finally:
@@ -459,14 +460,14 @@ def stdin_loop(command_queue: Queue):
                 logging.info(f"Unknown command: {line} (try: 'help' for list of commands)")
 
 
-async def perform_daily_capture(client, event_type: bool, start: int = start_preset, end: int = end_preset):
+async def perform_daily_capture(client, event_type: str, start: int = start_preset, end: int = end_preset):
     """Perform the daily capture sequence: battery query, go to the configured presets, snapshot each."""
-    global current_event, current_preset, start_preset, end_preset, ir_mode
+    global is_capture_sequence, current_preset, start_preset, end_preset, ir_mode
     query_battery(client)
     await asyncio.sleep(2)
+    is_capture_sequence = True
 
-    if event_type:  # Midnight event
-        current_event = 'midnight'
+    if event_type == "on":
         set_ir_control(client, 'on')
         ir_mode = 'on'
         await asyncio.sleep(2)
@@ -477,8 +478,18 @@ async def perform_daily_capture(client, event_type: bool, start: int = start_pre
             await asyncio.sleep(5)
             trigger_snapshot(client)
             await asyncio.sleep(30)
-    else:
-        current_event = 'noon'
+    elif event_type == "off":
+        set_ir_control(client, 'off')
+        ir_mode = 'off'
+        await asyncio.sleep(2)
+
+        for i in range(start, end + 1):
+            current_preset = i
+            go_to_preset(client, i)
+            await asyncio.sleep(5)
+            trigger_snapshot(client)
+            await asyncio.sleep(30)
+    elif event_type == "alt":  # Alternate mode
         for i in range(start, end + 1):
             current_preset = i
             set_ir_control(client, 'off')
@@ -494,10 +505,10 @@ async def perform_daily_capture(client, event_type: bool, start: int = start_pre
             trigger_snapshot(client)
             await asyncio.sleep(30)
             
-    current_event = None
     current_preset = None
     set_ir_control(client, 'auto')
     ir_mode = 'auto'
+    is_capture_sequence = False
 
 def time_to_next_noon():
     """Seconds until local 12:00 noon (since camera is in UTC time)."""
@@ -516,17 +527,16 @@ def time_to_next_noon():
 #     return (next_midnight - now).total_seconds()
 
 async def scheduler(client):
-    global start_preset, end_preset
     while True:
         delta_noon = time_to_next_noon()
-        is_midnight_event = False
+        event = "alt"
         logging.info(f"Next capture in {delta_noon / 3600:.2f} hours")
         await asyncio.sleep(delta_noon)
 
         logging.info("Noon reached — capture sequence starting")
         wakeup_both_lenses(client)
         await asyncio.sleep(20)
-        await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
+        await perform_daily_capture(client, event)
 
         # delta_noon = time_to_next_noon()
         # delta_midnight = time_to_next_midnight()
