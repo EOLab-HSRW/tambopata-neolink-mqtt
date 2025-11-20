@@ -46,7 +46,7 @@ sudo chmod 0700 ./mqtt/config/pwfile
 docker compose up -d
 ```
 
-Then attach to the MQTT Broker container
+Then use exec to run commands on the MQTT Broker container
 
 ```bash
 docker compose exec mosquitto sh
