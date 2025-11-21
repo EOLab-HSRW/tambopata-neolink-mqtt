@@ -64,7 +64,7 @@ services:
       - mosquitto
     stdin_open: true
     tty: true
-    command: [ "tail", "-f", "/dev/null" ] # overrides CMD → container stays alive doing nothing
+    # command: [ "tail", "-f", "/dev/null" ] # overrides CMD → container stays alive doing nothing
     restart: unless-stopped
 
 networks:
