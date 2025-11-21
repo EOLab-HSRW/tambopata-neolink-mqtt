@@ -28,22 +28,44 @@ services:
       - mosquitto
     restart: unless-stopped
 
-  mqtt-client:
+  mqtt-client-controller:
     build:
       context: .
       dockerfile: ./python_mqtt_client/Dockerfile.client
-    container_name: mqtt-client
+    image: python-mqtt-client:latest
+    container_name: mqtt-client-controller
     volumes:
       - ./python_mqtt_client:/app/python_mqtt_client
     environment:
-      - ENABLE_KEYBOARD=true
+      - NEOLINK_MODE=controller
+      - START_PRESET=0
+      - END_PRESET=3
     networks:
       - mqtt_default
     depends_on:
       - mosquitto
     restart: unless-stopped
+
+  mqtt-client-manual:
+    build:
+      context: .
+      dockerfile: ./python_mqtt_client/Dockerfile.client
+    image: python-mqtt-client:latest
+    container_name: mqtt-client-manual
+    volumes:
+      - ./python_mqtt_client:/app/python_mqtt_client
+    environment:
+      - NEOLINK_MODE=manual
+      - START_PRESET=0
+      - END_PRESET=3
+    networks:
+      - mqtt_default
+    depends_on:
+      - mosquitto
     stdin_open: true
     tty: true
+    command: [ "tail", "-f", "/dev/null" ] # overrides CMD → container stays alive doing nothing
+    restart: unless-stopped
 
 networks:
   mqtt_default:
