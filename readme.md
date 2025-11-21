@@ -122,6 +122,8 @@ Commands:                       " up/down/left/right - PTZ control "
                                 " help - Show this help message "
 ```
 
+You can detach after you are done with the sequence **CTRL+P -> CTRL+Q** to return to your shell.
+
 **IMPORTANT:**
 
 If you accidentally press **CTRL+C** and disconnect, you have to restart the compose container.
