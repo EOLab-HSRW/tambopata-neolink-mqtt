@@ -546,6 +546,12 @@ async def main():
     if MODE == "manual":
         Thread(target=stdin_loop, args=(command_queue,), daemon=True).start()
         tasks.append(process_commands(client))
+        # auto-delete old manual images on startup
+        manual_root = os.path.join("./captures", "from_manual")
+        if os.path.exists(manual_root):
+            shutil.rmtree(manual_root)
+            logging.info(f"Cleared all previous manual images: {manual_root}")
+        os.makedirs(manual_root, exist_ok=True)
     else:
         tasks.append(scheduler(client))
 
