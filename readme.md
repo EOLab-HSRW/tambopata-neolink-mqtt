@@ -18,6 +18,8 @@ Some devices that are connected to the university's WiFi require a VPN to access
 
 https://wiki.eolab.de/doku.php?id=snapcon2022:openvpn-connection&s[]=vpn
 
+After you are connected to the VPN then continue to the next step.
+
 ### Docker Compose Container
 
 1. Create new directory and cd to it
@@ -40,7 +42,13 @@ Then change the file permission to “0700” as expected by the service
 sudo chmod 0700 ./mqtt/config/pwfile
 ```
 
-4. Run the compose container detached
+4. Build the docker compose images
+
+```bash
+docker compose build
+```
+
+5. Run the compose container detached
 
 ```bash
 docker compose up -d
@@ -52,7 +60,7 @@ Then use exec to run commands on the MQTT Broker container
 docker compose exec mosquitto sh
 ```
 
-5. Create a new mosquitto user
+6. Create a new mosquitto user
 
 ```bash
 mosquitto_passwd -c /mosquitto/config/pwfile USERNAME
@@ -71,17 +79,36 @@ Then exit the bash
 exit
 ```
 
-6. Restart the compose container
+7. Restart the compose container
 
 ```bash
 docker compose restart
 ```
 
+### Configuring The Preset Range
+
+Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET):
+
+```bash
+mqtt-client-controller:
+    # ............. 
+
+    environment:
+      - NEOLINK_MODE=controller
+      - START_PRESET=0 
+      - END_PRESET=3
+
+    # .............
+```
+
 ### Accessing Manual Controls
 
-Manual controls is on progress
+Assigning new presets will only be possible through the manual controls. After the compose container is up, you can attach to the manual control service container with:
 
-List of future available commands:
+```bash
+docker attach mqtt-client-manual
+```
+Then you will be able to execute the available commands:
 
 ```bash
 Commands:                       " up/down/left/right - PTZ control "
@@ -91,11 +118,13 @@ Commands:                       " up/down/left/right - PTZ control "
                                 " r - Toggle IR mode (auto/on/off) "
                                 " s - Trigger snapshot on both lenses "
                                 " b - Query battery level "
-                                " p - Request presets report "
-                                " c - Configure preset range for the daily capture sequence "
                                 " d - Perform custom daily capture sequence "
                                 " help - Show this help message "
 ```
+
+**IMPORTANT:**
+
+If you accidentally press **CTRL+C** and disconnect, you have to restart the compose container.
 
 ## References
 
