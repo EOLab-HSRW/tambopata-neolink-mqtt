@@ -6,29 +6,37 @@ import os
 import asyncio
 import sys
 import time
+import signal
+import select  # For non-blocking stdin on Unix/WSL
 from datetime import datetime, timedelta
-from threading import Thread, Event, Timer
+from threading import Thread, Timer
 from queue import Queue
 from typing import Tuple
-import select  # For non-blocking stdin on Unix/WSL
 
-# Logging setup
+
+# ====================== CONFIG & MODE ======================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logging.info("Logging initialized.")
+logging.info("Neolink MQTT Client starting...")
 
-ENABLE_STDIN_INPUT = os.environ.get('ENABLE_KEYBOARD', 'false').lower() == 'true' 
-if ENABLE_STDIN_INPUT:
-    logging.info("Stdin input enabled (terminal key reading).")
+MODE = os.environ.get("NEOLINK_MODE", "controller").lower()
+if MODE not in ["controller", "manual"]:
+    logging.error(f"Invalid NEOLINK_MODE='{MODE}'. Falling back to 'controller'.")
+    MODE = "controller"
+
+logging.info(f"=== Running in {MODE.upper()} mode ===")
+if MODE == "manual":
+    logging.info("Type 'help' for commands, Ctrl+C to exit")
 
 # MQTT Broker details
 broker = 'mosquitto'
 port = 1883
 username = 'USERNAME'
 password = 'PASSWORD'
-client_id = f'python-mqtt-client-{uuid.getnode()}'
+client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
 
+# ====================== TOPICS & PATHS ======================
 # Lens details
-lens_name = 'USERNAME-0'  # Control and queries (except preview and zoom) go here
+lens_name = 'USERNAME-0'
 lens_0_name = 'USERNAME-0'
 lens_1_name = 'USERNAME-1'
 
@@ -47,7 +55,6 @@ ptz_preset_topic = f'{base_control}/ptz/preset'
 ptz_assign_topic = f'{base_control}/ptz/assign'
 zoom_topic = f'neolink/{lens_1_name}/control/zoom'
 
-
 base_query = f'neolink/{lens_name}/query'
 battery_query_topic = f'{base_query}/battery'
 ptz_preset_query_topic = f'{base_query}/ptz/preset'
@@ -60,63 +67,89 @@ wakeup_topic_1 = f'neolink/{lens_1_name}/control/wakeup'
 
 # Image save directory
 save_dir = './captures'
+
+if MODE == "controller":
+    save_dir = os.path.join(save_dir, "from_controller")
+elif MODE == "manual":
+    save_dir = os.path.join(save_dir, "from_manual")
+
 os.makedirs(save_dir, exist_ok=True)
 
-# Global states
+# ===== Global states =====================
+
+# Default values (can be overridden by environment variables)
+start_preset = int(os.environ.get("START_PRESET", "0"))
+end_preset   = int(os.environ.get("END_PRESET", "3"))
+
+# auto-swap if user sets start > end
+if start_preset > end_preset:
+    logging.warning(f"START_PRESET ({start_preset}) > END_PRESET ({end_preset}) – swapping automatically")
+    start_preset, end_preset = end_preset, start_preset
+
+if MODE == "controller":
+    logging.info(f"Daily capture preset range configured: {start_preset} → {end_preset}")
+
 ir_mode = 'auto'
 zoom_levels = [1.0, 2.0, 3.5]
 zoom_index = 0
-interactive_event = Event()  # To pause stdin_loop during interactive inputs
-wakeup_sent = False # To avoid multiple wakeup commands
-is_capture_sequence = False # Flag for daily capture sequence
-current_preset = None # Current PTZ position
-start_preset = 0
-end_preset = 3
+wakeup_sent = False
+is_capture_sequence = False
+current_preset = None
 
+stop_event = asyncio.Event()
+
+def reset_wakeup_flag():
+    global wakeup_sent
+    wakeup_sent = False
+    logging.info("Wakeup window expired")
+
+# ====================== MQTT CLIENT SETUP ======================
 def connect_mqtt(broker, port, client_id, username=None, password=None):
+    global _mqtt_client, _mqtt_thread
     def on_connect(client, userdata, flags, reason_code, properties=None):
-        global wakeup_sent  
+        global wakeup_sent
         if reason_code == 0:
             logging.info("Connected to MQTT Broker!")
             subscribe(client)
             query_battery(client)
             set_ir_control(client, 'auto')
-            # Proactive wakeup on connect, set flag, and start reset timer
-            wakeup_both_lenses(client)
-            wakeup_sent = True
-            def reset_wakeup():
-                global wakeup_sent
-                wakeup_sent = False
-                logging.info("Wakeup window expired—ready for next idle re-wake.")
-            Timer(600, reset_wakeup).start()  # Threading Timer for reset (avoids asyncio in MQTT thread)
+
+            if MODE == "controller":
+                wakeup_both_lenses(client, minutes=10)
+                wakeup_sent = True
+                Timer(600, reset_wakeup_flag).start()
         else:
             logging.error(f"Failed to connect, reason code {reason_code}")
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
-        logging.info(f"Disconnected with reason code: {reason_code} (flags: {flags})")
+        logging.warning(f"Disconnected (rc={reason_code}) (flags={flags}) – will reconnect automatically")
 
     def on_message(client, userdata, msg):
         global is_capture_sequence, current_preset, ir_mode
         if "preview" in msg.topic:
-            if msg.retain:  # Skip retained messages (e.g., last preview on subscribe)
+            if msg.retain:
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
                 return
+                # PREVENT CONTROLLER FROM SAVING MANUAL SNAPSHOTS
+            if MODE == "controller" and not is_capture_sequence:
+                logging.info("Controller ignoring manual snapshot (taken from manual client)")
+                return
+
             try:
                 payload_bytes = msg.payload
                 payload_len = len(payload_bytes)
-                if payload_len < 10:  # Min JPEG size
-                    logging.warning(f"Preview payload too short ({payload_len} bytes) for {msg.topic}")
+                if payload_len < 10:
+                    logging.warning(f"Preview too short ({payload_len} bytes) – skipping")
                     return
 
-                # Priority 1: Check for raw JPEG (binary, no base64)
+                # Try raw JPEG first
                 if payload_bytes.startswith(b'\xff\xd8\xff'):
                     logging.info(f"Raw JPEG detected for {msg.topic} (len={payload_len})")
                     img_bytes = payload_bytes
                 else:
-                    # Priority 2: Try as base64 (string decode only if needed)
                     b64_str = None
+                    # Base64 / data-uri fallback with aggressive cleanup
                     try:
-                        # Safe decode to str for base64/URI
                         raw_str = payload_bytes.decode('ascii', errors='replace').strip()
 
                         if raw_str.startswith("data:image"):
@@ -124,20 +157,17 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                         else:
                             b64_str = raw_str
 
-                        # Clean quotes
                         if b64_str.startswith('"') and b64_str.endswith('"'):
                             b64_str = b64_str[1:-1]
 
-                        # Fix padding/length
                         b64_str = b64_str.rstrip('=')
                         truncate_by = len(b64_str) % 4
                         if truncate_by != 0:
                             b64_str = b64_str[:-truncate_by]
                             logging.warning(f"Truncated {truncate_by} chars in base64 for {msg.topic} (new len={len(b64_str)})")
-                        missing_pads = (4 - len(b64_str) % 4) % 4
-                        b64_str += '=' * missing_pads
+                        missing = (4 - len(b64_str) % 4) % 4
+                        b64_str += '=' * missing
 
-                        # Decode
                         img_bytes = base64.b64decode(b64_str)
                     except (UnicodeDecodeError, base64.binascii.Error, ValueError) as e:
                         # Final fallback: Treat entire payload as base64 bytes (ignore errors)
@@ -152,28 +182,32 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                         padded_bytes = payload_bytes + b'=' * pads_needed
                         img_bytes = base64.b64decode(padded_bytes, validate=False)  # Ignore padding errors
 
-                # Save image with date-based subdirectory
+                # Save with date subfolder
                 now = datetime.now()
                 date_str = now.strftime("%d.%m.%Y")
-                timestamp = now.strftime("%H-%M-%S")   
+                timestamp = now.strftime("%H-%M-%S")
                 lens_id = "0" if lens_0_name in msg.topic else "1"
                 subdir = os.path.join(save_dir, date_str)
-                os.makedirs(subdir, exist_ok=True)  # Create date-based subdir
+                os.makedirs(subdir, exist_ok=True)
 
-                # Include event and preset if in daily capture mode, else just timestamp
                 if is_capture_sequence:
-                    filename = os.path.join(subdir, f"t{lens_id}_{ir_mode}_p{current_preset}_{timestamp}.jpg")
+                    subsubdir = os.path.join(subdir, "from_capture_sequence")
+                    os.makedirs(subsubdir, exist_ok=True)
+                    filename = os.path.join(subsubdir, f"t{lens_id}_{ir_mode}_p{current_preset}_{timestamp}.jpg")
                 else:
-                    filename = os.path.join(subdir, f"USERNAME{lens_id}_infrared-{ir_mode}_preset-{current_preset or 'default'}_{timestamp}.jpg")
+                    subsubdir = os.path.join(subdir, "manual_snapshots")
+                    os.makedirs(subsubdir, exist_ok=True)
+                    filename = os.path.join(subsubdir, f"USERNAME{lens_id}_infrared-{ir_mode}_preset-{current_preset or 'none'}_{timestamp}.jpg")
+
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
-                logging.info(f"Saved snapshot: {filename} (processed {payload_len} bytes)")
+                logging.info(f"Saved → {filename} ({payload_len} bytes)")
             except Exception as e:
                 logging.error(f"Failed to decode/save image from {msg.topic} (len={len(msg.payload)}): {e}. Hex preview: {msg.payload[:50].hex()}...")
         elif msg.topic == battery_level_topic:
             logging.info(f"Battery level: {msg.payload.decode()}%")
-        # elif "ptz/preset" in msg.topic:
-        #     logging.info(f"PTZ Presets: {msg.payload.decode()}")
+        elif "ptz/preset" in msg.topic:
+            logging.info(f"PTZ Presets: {msg.payload.decode()}")
         else:
             try:
                 logging.info(f"[{msg.topic}] {msg.payload.decode()}")
@@ -181,7 +215,6 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 logging.info(f"[{msg.topic}] <binary>")
 
     client = mqtt_client.Client(client_id=client_id, callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2)
-    # Reconnection parameters (removed invalid 'delay_factor')
     client.reconnect_delay_set(min_delay=1, max_delay=60)
     if username and password:
         client.username_pw_set(username, password)
@@ -189,7 +222,8 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.will_set("neolink/status", "offline", qos=1, retain=True)
-    client.connect(broker, port)
+
+    client.connect(broker, port)             
     return client
 
 def subscribe(client: mqtt_client.Client):
@@ -200,6 +234,7 @@ def subscribe(client: mqtt_client.Client):
         (battery_level_topic, 0),
         # (ptz_preset_status_topic, 0),
     ]
+
     for t, qos in topics:
         result = client.subscribe(t, qos)
         if result[0] == 0:
@@ -207,6 +242,7 @@ def subscribe(client: mqtt_client.Client):
         else:
             logging.warning(f"Failed to subscribe to {t}, rc={result[0]}")
 
+# ====================== COMMANDS ======================
 def query_battery(client):
     result = client.publish(battery_query_topic, "", qos=1, retain=False)
     if result.rc == 0:
@@ -288,11 +324,10 @@ def wakeup_both_lenses(client, minutes=10):
     else:
         logging.warning(f"Failed to send wakeup command to {wakeup_topic_1}, rc={result_1.rc}")
 
+# ====================== DAILY SEQUENCE ======================
 async def perform_daily_capture(client, event_type: str = "alt", start: int = start_preset, end: int = end_preset):
-    """Perform the daily capture sequence: battery query, go to the configured presets, snapshot each."""
-    global is_capture_sequence, current_preset, start_preset, end_preset, ir_mode
+    global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
     logging.info(f"Starting daily capture sequence (mode={event_type}, presets {start}→{end})")
-
     query_battery(client)
     await asyncio.sleep(2)
     is_capture_sequence = True
@@ -301,7 +336,6 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
         set_ir_control(client, 'on')
         ir_mode = 'on'
         await asyncio.sleep(2)
-    
         for i in range(start, end + 1):
             current_preset = i
             go_to_preset(client, i)
@@ -312,14 +346,13 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
         set_ir_control(client, 'off')
         ir_mode = 'off'
         await asyncio.sleep(2)
-
         for i in range(start, end + 1):
             current_preset = i
             go_to_preset(client, i)
             await asyncio.sleep(5)
             trigger_snapshot(client)
             await asyncio.sleep(30)
-    elif: # "alt" or anything else = alternate
+    else:  # "alt" or anything else = alternate
         for i in range(start, end + 1):
             current_preset = i
             # IR off first
@@ -327,7 +360,7 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
             ir_mode = 'off'
             await asyncio.sleep(2)
             go_to_preset(client, i)
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             trigger_snapshot(client)
             await asyncio.sleep(30)
             # IR on second
@@ -336,17 +369,16 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
             await asyncio.sleep(2)
             trigger_snapshot(client)
             await asyncio.sleep(30)
-            
-    current_preset = None
+
+    # Cleanup
     set_ir_control(client, 'auto')
     ir_mode = 'auto'
     is_capture_sequence = False
     logging.info("Daily capture sequence finished")
 
 def time_to_next_noon():
-    """Seconds until local 12:00 noon (since camera is in UTC time)."""
     now = datetime.now()
-    next_noon = now.replace(hour=17, minute=0, second=0, microsecond=0)
+    next_noon = now.replace(hour=17, minute=0, second=0, microsecond=0)  # 17:00 local = noon camera time?
     if now >= next_noon:
         next_noon += timedelta(days=1)
     return (next_noon - now).total_seconds()
@@ -359,22 +391,24 @@ def time_to_next_noon():
 #         next_midnight += timedelta(days=1)
 #     return (next_midnight - now).total_seconds()
 
-def stdin_loop(command_queue: Queue):
-    """Reads keys/lines from stdin non-blockingly and enqueues commands."""
-    global interactive_event
-    logging.info("Stdin listener started. Type 'help' and press Enter for commands list.")
-    while True:
-        # Skip reading if interactive input is active (during 'assign' prompts)
-        if interactive_event.is_set():
-            time.sleep(0.1)
+# ====================== MANUAL MODE ONLY ======================
+if MODE == "manual":
+    command_queue = Queue()
+    stdin_lock = asyncio.Lock()
+else:
+    command_queue = None
+    stdin_lock = None
+
+def stdin_loop(queue: Queue):
+    logging.info("Keyboard listener active – type 'help' + Enter")
+    while not stop_event.is_set():
+        if stdin_lock.locked():
+            time.sleep(0.1)  # Pause polling while a prompt is active
             continue
-        # Use select for non-blocking read 
-        ready, _, _ = select.select([sys.stdin], [], [], 0.1)  # 0.1s timeout
-        if ready:
+        if select.select([sys.stdin], [], [], 0.1)[0]:
             line = sys.stdin.readline().strip().lower()
             if not line:
                 continue
-            # Map input strings to commands and enqueue
             if line in ['up', 'down', 'left', 'right']:
                 command_queue.put(('ptz', line))
                 logging.info(f"Enqueued PTZ: {line}")
@@ -403,9 +437,6 @@ def stdin_loop(command_queue: Queue):
             elif line == 'd':
                 command_queue.put(('custom_capture',))
                 logging.info("Enqueued custom capture sequence")
-            elif line == 'c':
-                command_queue.put(('configure_preset_range',))
-                logging.info("Enqueued configure preset range")
             elif line == 'help':
                 logging.info("Commands:\n"
                                 " up/down/left/right - PTZ control\n"
@@ -416,130 +447,75 @@ def stdin_loop(command_queue: Queue):
                                 " s - Trigger snapshot on both lenses\n"
                                 " b - Query battery level\n"
                                 # " p - Request presets report\n"
-                                " c - Configure preset range for the daily capture sequence\n"
                                 " d - Perform custom daily capture sequence\n"
                                 " help - Show this help message")
             else:
                 logging.info(f"Unknown command: {line} (try: 'help' for list of commands)")
 
-async def process_commands(client, command_queue):
-    global ir_mode, zoom_index, interactive_event, wakeup_sent, current_preset
+async def process_commands(client):
+    global ir_mode, zoom_index, start_preset, end_preset, current_preset
     loop = asyncio.get_event_loop()
-    while True:
-        try:
-            future = loop.run_in_executor(None, command_queue.get)
-            cmd: Tuple = await future
-            cmd_type = cmd[0]
+    while not stop_event.is_set():
+        cmd = await loop.run_in_executor(None, command_queue.get)
+        cmd_type = cmd[0]
 
-            # Trigger wakeup only after initial connect window (on subsequent idles)
-            if not wakeup_sent:
-                wakeup_both_lenses(client)
-                await asyncio.sleep(15)  # Give some time for wakeup
-                wakeup_sent = True
-                def reset_wakeup():
-                    global wakeup_sent
-                    wakeup_sent = False
-                    logging.info("Wake up window expired — ready for next idle re-wake.")
-                Timer(600, reset_wakeup).start()
-
-            if cmd_type == 'ptz':
-                direction = cmd[1]
-                amount_future = loop.run_in_executor(None, input, f"Enter amount for {direction} (default 32.0): ")
-                amount_str = (await amount_future).strip()
+        if cmd_type == 'ptz':
+            direction = cmd[1]
+            amount = await loop.run_in_executor(None, lambda: float(input(f"Amount for {direction} [32.0]: ") or "32.0"))
+            manual_ptz_control(client, direction, amount)
+            current_preset = None
+        elif cmd_type == 'preset':
+            go_to_preset(client, cmd[1])
+            current_preset = cmd[1]
+        elif cmd_type == 'ir_toggle':
+            modes = ['auto', 'on', 'off']
+            ir_mode = modes[(modes.index(ir_mode) + 1) % 3]
+            set_ir_control(client, ir_mode)
+        elif cmd_type == 'zoom_toggle':
+            zoom_index = (zoom_index + 1) % len(zoom_levels)
+            manual_zoom_control(client, zoom_levels[zoom_index])
+        elif cmd_type == 'snapshot_both':
+            trigger_snapshot(client)
+        elif cmd_type == 'battery':
+            query_battery(client)
+        # elif cmd_type == 'presets_report':
+        #     request_presets_report(client)
+        elif cmd_type == 'assign':
+            async with stdin_lock:
+                pid = await loop.run_in_executor(None, lambda: input("Preset ID: "))
+                name = await loop.run_in_executor(None, lambda: input("Preset name: "))
                 try:
-                    amount = float(amount_str) if amount_str else 32.0
+                    assign_preset(client, int(pid), name)
                 except ValueError:
-                    amount = 32.0
-                manual_ptz_control(client, direction, amount)
-            elif cmd_type == 'preset':
-                preset_id = cmd[1]
-                go_to_preset(client, preset_id)
-                current_preset = preset_id
-            elif cmd_type == 'ir_toggle':
-                modes = ['auto', 'on', 'off']
-                current_idx = modes.index(ir_mode)
-                next_idx = (current_idx + 1) % 3
-                ir_mode = modes[next_idx]
-                set_ir_control(client, ir_mode)
-            elif cmd_type == 'zoom_toggle':
-                zoom_index = (zoom_index + 1) % 3
-                amount = zoom_levels[zoom_index]
-                manual_zoom_control(client, amount)
-            elif cmd_type == 'snapshot_both':
-                trigger_snapshot(client)
-            elif cmd_type == 'battery':
-                query_battery(client)
-            # elif cmd_type == 'presets_report':
-            #     request_presets_report(client)
-            elif cmd_type == 'configure_preset_range':
-                interactive_event.set()
+                    logging.error("Invalid ID. Must be an integer.")
+        elif cmd_type == 'custom_capture':
+            async with stdin_lock:
+                et = await loop.run_in_executor(None, lambda: input("Event (on/off/alt): ").lower())
+                s = await loop.run_in_executor(None, lambda: input(f"Start preset [{start_preset}]: ") or str(start_preset))
+                e = await loop.run_in_executor(None, lambda: input(f"End preset [{end_preset}]: ") or str(end_preset))
                 try:
-                    global start_preset, end_preset
-                    logging.info(f"Current preset range: {start_preset} to {end_preset} (default)")
-                    start_future = loop.run_in_executor(None, input, "Enter start preset ID: ")
-                    start_str = (await start_future).strip()
-                    end_future = loop.run_in_executor(None, input, "Enter end preset ID: ")
-                    end_str = (await end_future).strip()
-                    try:
-                        start_preset = int(start_str) if start_str else 0
-                        end_preset = int(end_str) if end_str else 3
-                        if start_preset > end_preset:
-                            logging.warning("Start preset > end preset; swapping.")
-                            start_preset, end_preset = end_preset, start_preset
-                        logging.info(f"Configured preset range: {start_preset} to {end_preset}")
-                    except ValueError:
-                        logging.error("Invalid preset values. Must be integers.")
-                finally:
-                    interactive_event.clear()
-            elif cmd_type == 'custom_capture':
-                interactive_event.set()
-                try:
-                    event_future = loop.run_in_executor(None, input, "Event type (on/off/alt for alternate): ")
-                    event_str = (await event_future).strip().lower()
-                    start_future = loop.run_in_executor(None, input, "Start preset (default 0): ")
-                    start_str = (await start_future).strip()
-                    end_future = loop.run_in_executor(None, input, "End preset (default 3): ")
-                    end_str = (await end_future).strip()
-                    try:
-                        start_preset = int(start_str) if start_str else 0
-                        end_preset = int(end_str) if end_str else 3
-                        if start_preset > end_preset:
-                            logging.warning("Start preset > end preset; swapping.")
-                            start_preset, end_preset = end_preset, start_preset
-                        await perform_daily_capture(client, event_str, start_preset, end_preset)
-                    except ValueError:
-                        logging.error("Invalid preset values. Must be integers.")
-                finally:
-                    interactive_event.clear()
-            elif cmd_type == 'assign':
-                interactive_event.set()  #Pause stdin_loop during interactive input
-                try:
-                    id_future = loop.run_in_executor(None, input, "Enter preset ID (integer): ")
-                    id_str = (await id_future).strip()
-                    name_future = loop.run_in_executor(None, input, "Enter preset name (no spaces): ")
-                    name = (await name_future).strip()
-                    try:
-                        preset_id = int(id_str)
-                        assign_preset(client, preset_id, name)
-                    except ValueError:
-                        logging.error("Invalid preset ID. Must be an integer.")
-                finally:
-                    interactive_event.clear()  # Resume stdin_loop
-            command_queue.task_done()
-        except Exception as e:
-            logging.error(f"Error processing command: {e}")
+                    start_preset, end_preset = int(s), int(e)
+                    if start_preset > end_preset:
+                        start_preset, end_preset = end_preset, start_preset
+                except ValueError:
+                    logging.error("Invalid numbers")
+                await perform_daily_capture(client, et if et in ["on", "off", "alt"] else "alt", start=start_preset, end=end_preset)
+        command_queue.task_done()
 
+# ====================== CONTROLLER MODE ONLY ======================
 async def scheduler(client):
-    while True:
-        delta_noon = time_to_next_noon()
-        event = "alt"
-        logging.info(f"Next capture in {delta_noon / 3600:.2f} hours")
-        await asyncio.sleep(delta_noon)
-
-        logging.info("Noon reached — capture sequence starting")
-        wakeup_both_lenses(client)
+    while not stop_event.is_set():
+        seconds = time_to_next_noon()
+        logging.info(f"Next scheduled capture in {seconds/3600:.2f} hours")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+            break
+        except asyncio.TimeoutError:
+            pass
+        logging.info("⏰ Scheduled time reached → starting daily capture")
+        wakeup_both_lenses(client, minutes=10)
         await asyncio.sleep(20)
-        await perform_daily_capture(client, event)
+        await perform_daily_capture(client, event_type="alt")
 
         # delta_noon = time_to_next_noon()
         # delta_midnight = time_to_next_midnight()
@@ -559,22 +535,22 @@ async def scheduler(client):
         #     await asyncio.sleep(20)
         #     await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
 
+# ====================== MAIN ======================
 async def main():
-    global ir_mode, zoom_index
     client = connect_mqtt(broker, port, client_id, username, password)
-    client.loop_start()
-
-    command_queue = Queue()
-    stdin_thread = None
-    if ENABLE_STDIN_INPUT:
-        stdin_thread = Thread(target=stdin_loop, args=(command_queue,), daemon=True)
-        stdin_thread.start()
-
-    sched_task = asyncio.create_task(scheduler(client))
-    proc_task = asyncio.create_task(process_commands(client, command_queue))
+    
+    client.loop_start()    
+    
+    tasks = []
+    
+    if MODE == "manual":
+        Thread(target=stdin_loop, args=(command_queue,), daemon=True).start()
+        tasks.append(process_commands(client))
+    else:
+        tasks.append(scheduler(client))
 
     try:
-        await asyncio.gather(sched_task, proc_task)
+        await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         logging.info("Shutting down...")
     except asyncio.CancelledError:
@@ -587,6 +563,6 @@ async def main():
         # Give a bit of time for cleanup
         client.loop_forever(timeout=1.0)
         logging.info("MQTT Client disconnected gracefully.")
-
+        
 if __name__ == '__main__':
     asyncio.run(main())
