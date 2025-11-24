@@ -1,4 +1,5 @@
 import paho.mqtt.client as mqtt_client
+import requests  
 import logging
 import uuid
 import base64
@@ -8,6 +9,7 @@ import sys
 import time
 import signal
 import select  # For non-blocking stdin on Unix/WSL
+import shutil
 from datetime import datetime, timedelta
 from threading import Thread, Timer
 from queue import Queue
@@ -33,6 +35,68 @@ port = 1883
 username = 'USERNAME'
 password = 'PASSWORD'
 client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
+
+# ====================== NEXTCLOUD WEBDAV SETUP ======================
+
+def upload_to_nextcloud(local_filename):
+    """Upload file to Nextcloud /Photos/YYYY-MM-DD/ using raw WebDAV (PUT + MKCOL)."""
+    if MODE != "controller" or not is_capture_sequence:
+        return  # Only sequence images from controller
+
+    try:
+        webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/') 
+        username = os.environ.get('NEXTCLOUD_USERNAME')
+        password = os.environ.get('NEXTCLOUD_PASSWORD')
+        if not all([webdav_url, username, password]):
+            logging.warning("Nextcloud env vars missing – skipping upload")
+            return
+
+        now = datetime.now()
+        local_now = now - timedelta(hours=5)
+        date_str = local_now.strftime("%Y-%m-%d")
+        base_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').lstrip('/')
+        remote_dir = f"{base_dir}/{date_str}"  # Photos/YYYY-MM-DD/
+        remote_filename = f"{webdav_url}/{remote_dir}/{os.path.basename(local_filename)}"
+
+        # Auth setup
+        auth = (username, password)
+        headers = {'Content-Type': 'image/jpg'}  
+
+        # MKCOL for base dir (with PROPFIND check)
+        base_url = f"{webdav_url}/{base_dir}"
+        propfind_resp = requests.request('PROPFIND', base_url, auth=auth, headers={'Depth': '0'})
+        logging.debug(f"PROPFIND {base_dir}: status {propfind_resp.status_code}")
+        if propfind_resp.status_code not in (200, 207):  # Not found/exists
+            mkcol_resp = requests.request('MKCOL', base_url, auth=auth)
+            logging.info(f"Created base dir {base_dir}: status {mkcol_resp.status_code}")
+            if mkcol_resp.status_code != 201:
+                logging.warning(f"Base MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
+
+        # MKCOL for date subdir
+        subdir_url = f"{webdav_url}/{remote_dir}"
+        propfind_resp = requests.request('PROPFIND', subdir_url, auth=auth, headers={'Depth': '0'})
+        logging.debug(f"PROPFIND {remote_dir}: status {propfind_resp.status_code}")
+        if propfind_resp.status_code not in (200, 207):
+            mkcol_resp = requests.request('MKCOL', subdir_url, auth=auth)
+            logging.info(f"Created subdir {remote_dir}: status {mkcol_resp.status_code}")
+            if mkcol_resp.status_code != 201:
+                logging.warning(f"Subdir MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
+
+        # Upload file with retries
+        with open(local_filename, 'rb') as f:
+            for attempt in range(3):
+                upload_resp = requests.put(remote_filename, data=f, auth=auth, headers=headers)
+                logging.debug(f"Upload attempt {attempt+1} to {remote_filename}: status {upload_resp.status_code}")
+                if upload_resp.status_code in (200, 201, 204):  # Success codes per WebDAV docs
+                    logging.info(f"Uploaded to Nextcloud: {remote_dir}/{os.path.basename(local_filename)}")
+                    return
+                else:
+                    logging.warning(f"Upload attempt {attempt+1} failed: {upload_resp.status_code} - {upload_resp.text[:200]}")
+                    f.seek(0)  # Reset file pointer for retry
+                    time.sleep(2 ** attempt)
+        logging.error(f"Failed to upload {local_filename} after 3 retries")
+    except Exception as e:
+        logging.error(f"Nextcloud upload setup failed: {e}")
 
 # ====================== TOPICS & PATHS ======================
 # Lens details
@@ -80,6 +144,9 @@ os.makedirs(save_dir, exist_ok=True)
 # Default values (can be overridden by environment variables)
 start_preset = int(os.environ.get("START_PRESET", "0"))
 end_preset   = int(os.environ.get("END_PRESET", "3"))
+
+daily_hour = int(os.environ.get("START_HOUR", "17"))  # 17 = 11:00 local (UTC-5)
+daily_minute = int(os.environ.get("START_MINUTE", "0"))  
 
 # auto-swap if user sets start > end
 if start_preset > end_preset:
@@ -184,24 +251,26 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
 
                 # Save with date subfolder
                 now = datetime.now()
-                date_str = now.strftime("%d.%m.%Y")
-                timestamp = now.strftime("%H-%M-%S")
-                lens_id = "0" if lens_0_name in msg.topic else "1"
+                local_now = now - timedelta(hours=5)
+                date_str = local_now.strftime("%d.%m.%Y")
+                timestamp = local_now.strftime("%H-%M-%S")
+                lens_id = "wide" if lens_0_name in msg.topic else "zoom"
                 subdir = os.path.join(save_dir, date_str)
                 os.makedirs(subdir, exist_ok=True)
 
                 if is_capture_sequence:
                     subsubdir = os.path.join(subdir, "from_capture_sequence")
                     os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"t{lens_id}_{ir_mode}_p{current_preset}_{timestamp}.jpg")
+                    filename = os.path.join(subsubdir, f"p{current_preset}_{lens_id}_{ir_mode}_{timestamp}.jpg")
                 else:
                     subsubdir = os.path.join(subdir, "manual_snapshots")
                     os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"USERNAME{lens_id}_infrared-{ir_mode}_preset-{current_preset or 'none'}_{timestamp}.jpg")
+                    filename = os.path.join(subsubdir, f"preset-{current_preset or 'none'}_{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
 
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
                 logging.info(f"Saved → {filename} ({payload_len} bytes)")
+                upload_to_nextcloud(filename)
             except Exception as e:
                 logging.error(f"Failed to decode/save image from {msg.topic} (len={len(msg.payload)}): {e}. Hex preview: {msg.payload[:50].hex()}...")
         elif msg.topic == battery_level_topic:
@@ -376,21 +445,6 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
     is_capture_sequence = False
     logging.info("Daily capture sequence finished")
 
-def time_to_next_noon():
-    now = datetime.now()
-    next_noon = now.replace(hour=17, minute=0, second=0, microsecond=0)  # 17:00 local = noon camera time?
-    if now >= next_noon:
-        next_noon += timedelta(days=1)
-    return (next_noon - now).total_seconds()
-
-# def time_to_next_midnight():
-#     """Seconds until local 00:00 midnight (since camera is in UTC time)."""
-#     now = datetime.now()
-#     next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
-#     if now >= next_midnight:
-#         next_midnight += timedelta(days=1)
-#     return (next_midnight - now).total_seconds()
-
 # ====================== MANUAL MODE ONLY ======================
 if MODE == "manual":
     command_queue = Queue()
@@ -503,6 +557,24 @@ async def process_commands(client):
         command_queue.task_done()
 
 # ====================== CONTROLLER MODE ONLY ======================
+
+
+def time_to_next_noon():
+    global daily_hour, daily_minute
+    now = datetime.now()
+    next_noon = now.replace(hour=daily_hour, minute=daily_minute, second=0, microsecond=0)  
+    if now >= next_noon:
+        next_noon += timedelta(days=1)
+    return (next_noon - now).total_seconds()
+
+# def time_to_next_midnight():
+#     """Seconds until local 00:00 midnight (since camera is in UTC time)."""
+#     now = datetime.now()
+#     next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
+#     if now >= next_midnight:
+#         next_midnight += timedelta(days=1)
+#     return (next_midnight - now).total_seconds()
+
 async def scheduler(client):
     while not stop_event.is_set():
         seconds = time_to_next_noon()
