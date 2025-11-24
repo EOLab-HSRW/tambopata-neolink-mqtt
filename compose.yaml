@@ -40,12 +40,12 @@ services:
       - NEOLINK_MODE=controller
       - START_PRESET=0
       - END_PRESET=3
+      - START_HOUR=17
+      - START_MINUTE=0
       - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/USERNAME/
       - NEXTCLOUD_TARGET_DIR=/Photos
       - NEXTCLOUD_USERNAME=USERNAME
       - NEXTCLOUD_PASSWORD=PASSWORD
-      - START_HOUR=17
-      - START_MINUTE=0
     networks:
       - mqtt_default
     depends_on:
