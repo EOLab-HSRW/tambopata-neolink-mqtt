@@ -85,9 +85,9 @@ exit
 docker compose restart
 ```
 
-### Configuring The Preset Range
+### Configuring Capture Time and The Preset Range
 
-Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET):
+Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). You can also configure the daily capture time by editing the START_HOUR and START_MINUTE, be aware that the camera is 5 hour ahead than the local time.
 
 ```bash
 mqtt-client-controller:
@@ -97,16 +97,17 @@ mqtt-client-controller:
       - NEOLINK_MODE=controller
       - START_PRESET=0 
       - END_PRESET=3
-
+      - START_HOUR=17
+      - START_MINUTE=0
     # .............
 ```
 
 ### Accessing Manual Controls
 
-Assigning new presets will only be possible through the manual controls. After the compose container is up, you can attach to the manual control service container with:
+Assigning new presets will only be possible through the manual controls. After the compose container is up, the mqtt-client-manual container is still idle and will only run the python script on your command. 
 
 ```bash
-docker attach mqtt-client-manual
+docker compose exec -it mqtt-client-manual python client.py
 ```
 Then you will be able to execute the available commands:
 
@@ -126,7 +127,7 @@ You can detach after you are done with the sequence **CTRL+P -> CTRL+Q** to retu
 
 **IMPORTANT:**
 
-If you accidentally press **CTRL+C** and disconnect, you have to restart the compose container.
+You must disconnect and close the manual control service MQTT connection using **CTRL+C**, if you forgot to do so and had closed the terminal without closing the connection, you have to restart the compose container to access it again. Otherwise if you run the exec command again, there will be an endless loop of client reconnection of the manual service.
 
 ## References
 
