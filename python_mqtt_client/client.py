@@ -58,7 +58,7 @@ def upload_to_nextcloud(local_filename):
         remote_dir = f"{base_dir}/{date_str}"  # Photos/YYYY-MM-DD/
         remote_filename = f"{webdav_url}/{remote_dir}/{os.path.basename(local_filename)}"
 
-        # Auth setup
+        # Auth
         auth = (username, password)
         headers = {'Content-Type': 'image/jpg'}  
 
@@ -141,12 +141,63 @@ os.makedirs(save_dir, exist_ok=True)
 
 # ===== Global states =====================
 
-# Default values (can be overridden by environment variables)
+# Parse SCHEDULED_TIMES env var into list of (hour, minute) tuples
+def parse_schedule_times() -> list[tuple[int, int]]:
+    raw = os.getenv("SCHEDULED_TIMES", "12:00")
+    times = []
+    seen = set()
+
+    for t in raw.split(","):
+        t = t.strip()
+        if not t:
+            continue
+        try:
+            h, m = map(int, t.split(":"))
+            if not (0 <= h < 24 and 0 <= m < 60):
+                logging.warning(f"Hour/minute out of range in time: {t}")
+                raise ValueError
+            if (h, m) in seen:
+                logging.warning(f"Duplicate time {t} ignored")
+                continue
+            seen.add((h, m))
+            times.append((h, m))
+        except Exception:
+            logging.warning(f"Invalid time format: {t} (use HH:MM), skipping")
+
+    if not times:
+        times = [(12, 0)]
+        logging.warning("No valid times → fallback to 12:00")
+
+    times.sort()
+
+    # ——— check for too-close times ———
+    for i in range(len(times)):
+        h1, m1 = times[i]
+        t1 = h1 * 60 + m1
+
+        # Check against next time (and wrap around to first tomorrow)
+        if i + 1 < len(times):
+            h2, m2 = times[i + 1]
+            t2 = h2 * 60 + m2
+        else:
+            h2, m2 = times[0]
+            t2 = (h2 * 60 + m2) + 24 * 60  # tomorrow
+
+        delta_min = t2 - t1
+        if delta_min < 8:  # 5 minutes for a full capture sequnce + buffer minutes
+            logging.warning(
+                f"Scheduled times too close! {h1:02d}:{m1:02d} → {h2 % 24:02d}:{m2:02d} "
+                f"is only {delta_min} minute(s) apart. Sequence takes ~6-7 min → risk of overlap!"
+            )
+
+    logging.info(f"Scheduled capture times: {', '.join(f'{h:02d}:{m:02d}' for h,m in times)}")
+    return times
+
+# Global list of scheduled times
+SCHEDULED_TIMES = parse_schedule_times()
+
 start_preset = int(os.environ.get("START_PRESET", "0"))
 end_preset   = int(os.environ.get("END_PRESET", "3"))
-
-daily_hour = int(os.environ.get("START_HOUR", "17"))  # 17 = 11:00 local (UTC-5)
-daily_minute = int(os.environ.get("START_MINUTE", "0"))  
 
 # auto-swap if user sets start > end
 if start_preset > end_preset:
@@ -558,54 +609,83 @@ async def process_commands(client):
 
 # ====================== CONTROLLER MODE ONLY ======================
 
-
-def time_to_next_noon():
-    global daily_hour, daily_minute
+def seconds_to_next_scheduled_time() -> float:
+    global SCHEDULED_TIMES
+    """Return seconds until the next scheduled time (from SCHEDULED_TIMES list)"""
     now = datetime.now()
-    next_noon = now.replace(hour=daily_hour, minute=daily_minute, second=0, microsecond=0)  
-    if now >= next_noon:
-        next_noon += timedelta(days=1)
-    return (next_noon - now).total_seconds()
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
 
-# def time_to_next_midnight():
-#     """Seconds until local 00:00 midnight (since camera is in UTC time)."""
-#     now = datetime.now()
-#     next_midnight = now.replace(hour=5, minute=0, second=0, microsecond=0)
-#     if now >= next_midnight:
-#         next_midnight += timedelta(days=1)
-#     return (next_midnight - now).total_seconds()
+    # Build list of upcoming datetimes for today and tomorrow
+    candidates = []
+    for h, m in SCHEDULED_TIMES:
+        dt_today = datetime(today.year, today.month, today.day, h, m)
+        dt_tomorrow = datetime(tomorrow.year, tomorrow.month, tomorrow.day, h, m)
+        
+        if dt_today > now:
+            candidates.append(dt_today)
+        candidates.append(dt_tomorrow)  # always include tomorrow's
+
+    if not candidates:
+        return 3600  # retry in 1 hour
+
+    next_time = min(candidates)
+    seconds = (next_time - now).total_seconds()
+    logging.info(f"Next scheduled capture at {next_time.strftime('%H:%M')} → in {seconds/3600:.2f} hours")
+    return seconds
+
 
 async def scheduler(client):
     while not stop_event.is_set():
-        seconds = time_to_next_noon()
-        logging.info(f"Next scheduled capture in {seconds/3600:.2f} hours")
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=seconds)
-            break
-        except asyncio.TimeoutError:
-            pass
-        logging.info("⏰ Scheduled time reached → starting daily capture")
-        wakeup_both_lenses(client, minutes=10)
-        await asyncio.sleep(20)
-        await perform_daily_capture(client, event_type="alt")
-
-        # delta_noon = time_to_next_noon()
-        # delta_midnight = time_to_next_midnight()
-        # sleep_delta = min(delta_noon, delta_midnight)
-        # is_midnight_event = delta_midnight <= delta_noon
-        # logging.info(f"Next capture in {sleep_delta / 3600:.2f} hours (event: {'midnight' if is_midnight_event else 'noon'})")
-        # await asyncio.sleep(sleep_delta)
+            seconds = seconds_to_next_scheduled_time()
+            logging.info(f"Sleeping until next scheduled capture...")
             
-        # if is_midnight_event:
-        #     logging.info("Midnight reached — IR ON + capture sequence")
-        #     wakeup_both_lenses(client)
-        #     await asyncio.sleep(20)
-        #     await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
-        # else:
-        #     logging.info("Noon reached — capture sequence")
-        #     wakeup_both_lenses(client)
-        #     await asyncio.sleep(20)
-        #     await perform_daily_capture(client, is_midnight_event, start_preset, end_preset)
+            # Wait either for timeout or stop_event
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+                logging.info("Scheduler stopped by stop_event")
+                break
+            except asyncio.TimeoutError:
+                pass  # timeout → time to run
+
+            # ——— RUN CAPTURE SEQUENCE ———
+            current_time = datetime.now().strftime("%H:%M")
+            logging.info(f"⏰ Scheduled time reached ({current_time}) → starting daily capture")
+            
+            wakeup_both_lenses(client, minutes=10)
+            await asyncio.sleep(20)
+            await perform_daily_capture(client, event_type="alt")
+            
+            # Optional: small delay after sequence to avoid double-triggering near midnight
+            await asyncio.sleep(30)
+
+        except Exception as e:
+            logging.error(f"Error in scheduler loop: {e}", exc_info=True)
+            await asyncio.sleep(60)  # no spam on error
+
+
+# def time_to_next_noon():
+#     global daily_hour, daily_minute
+#     now = datetime.now()
+#     next_noon = now.replace(hour=daily_hour, minute=daily_minute, second=0, microsecond=0)  
+#     if now >= next_noon:
+#         next_noon += timedelta(days=1)
+#     return (next_noon - now).total_seconds()
+
+# async def scheduler(client):
+#     while not stop_event.is_set():
+#         seconds = time_to_next_noon()
+#         logging.info(f"Next scheduled capture in {seconds/3600:.2f} hours")
+#         try:
+#             await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+#             break
+#         except asyncio.TimeoutError:
+#             pass
+#         logging.info("⏰ Scheduled time reached → starting daily capture")
+#         wakeup_both_lenses(client, minutes=10)
+#         await asyncio.sleep(20)
+#         await perform_daily_capture(client, event_type="alt")
 
 # ====================== MAIN ======================
 async def main():
