@@ -124,7 +124,7 @@ Commands:                       " up/down/left/right - PTZ control "
 
 **IMPORTANT:**
 
-You must disconnect and close the manual control service MQTT connection using **CTRL+C** after you are done, if you forgot to do so and had closed the terminal without closing the connection, you have to restart the compose container to access it again. Otherwise if you run the exec command again, there will be an endless loop of client reconnection of the manual service.
+You must disconnect and close the manual control MQTT connection using **CTRL+C** after you are done, if you forgot to do so and had closed the terminal without closing the connection, you have to restart the compose container to be able to access it again. Otherwise if you run the exec command again without closing the MQTT connection of the previous one, there will be an endless loop of client reconnection of the manual service.
 
 You can detach after you close the connection with the sequence **CTRL+P -> CTRL+Q** and return to your shell.
 
