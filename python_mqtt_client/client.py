@@ -193,9 +193,6 @@ def parse_schedule_times() -> list[tuple[int, int]]:
     logging.info(f"Scheduled capture times: {', '.join(f'{h:02d}:{m:02d}' for h,m in times)}")
     return times
 
-# Global list of scheduled times
-SCHEDULED_TIMES = parse_schedule_times()
-
 start_preset = int(os.environ.get("START_PRESET", "0"))
 end_preset   = int(os.environ.get("END_PRESET", "3"))
 
@@ -205,6 +202,8 @@ if start_preset > end_preset:
     start_preset, end_preset = end_preset, start_preset
 
 if MODE == "controller":
+    # Global list of scheduled times
+    SCHEDULED_TIMES = parse_schedule_times()
     logging.info(f"Daily capture preset range configured: {start_preset} → {end_preset}")
 
 ir_mode = 'auto'
