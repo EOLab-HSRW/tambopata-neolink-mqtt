@@ -87,7 +87,7 @@ docker compose restart
 
 ### Configuring Capture Time and The Preset Range
 
-Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time.
+Currently we only have 4 presets for the image capture automation (preset 0 to 3). After you have more/new presets that you had assigned with the manual controls, then you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time.
 
 ```bash
 mqtt-client-controller:
@@ -122,11 +122,13 @@ Commands:                       " up/down/left/right - PTZ control "
                                 " help - Show this help message "
 ```
 
-You can detach after you are done with the sequence **CTRL+P -> CTRL+Q** to return to your shell.
-
 **IMPORTANT:**
 
-You must disconnect and close the manual control service MQTT connection using **CTRL+C**, if you forgot to do so and had closed the terminal without closing the connection, you have to restart the compose container to access it again. Otherwise if you run the exec command again, there will be an endless loop of client reconnection of the manual service.
+You must disconnect and close the manual control service MQTT connection using **CTRL+C** after you are done, if you forgot to do so and had closed the terminal without closing the connection, you have to restart the compose container to access it again. Otherwise if you run the exec command again, there will be an endless loop of client reconnection of the manual service.
+
+You can detach after you close the connection with the sequence **CTRL+P -> CTRL+Q** and return to your shell.
+
+
 
 ## References
 
