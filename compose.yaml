@@ -40,8 +40,7 @@ services:
       - NEOLINK_MODE=controller
       - START_PRESET=0
       - END_PRESET=3
-      - START_HOUR=17
-      - START_MINUTE=0
+      - SCHEDULED_TIMES=16:30,17:00,17:30
       - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/USERNAME/
       - NEXTCLOUD_TARGET_DIR=/Photos
       - NEXTCLOUD_USERNAME=USERNAME
@@ -70,7 +69,7 @@ services:
       - mosquitto
     stdin_open: true
     tty: true
-    command: [ "tail", "-f", "/dev/null" ] # overrides CMD → container stays alive doing nothing
+    command: [ "tail", "-f", "/dev/null" ] # overrides CMD -> container stays alive without launching the script
     restart: unless-stopped
 
 networks:
