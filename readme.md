@@ -87,7 +87,7 @@ docker compose restart
 
 ### Configuring Capture Time and The Preset Range
 
-Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). You can also configure the daily capture time by editing the START_HOUR and START_MINUTE, be aware that the camera is 5 hour ahead than the local time.
+Currently we only have 4 presets for the image capture automation (preset 0 to 3). When you have more presets that you can assign through accessing the manual controls, you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time.
 
 ```bash
 mqtt-client-controller:
@@ -97,8 +97,7 @@ mqtt-client-controller:
       - NEOLINK_MODE=controller
       - START_PRESET=0 
       - END_PRESET=3
-      - START_HOUR=17
-      - START_MINUTE=0
+      - SCHEDULED_TIMES=11:30,12:00,12:30
     # .............
 ```
 
