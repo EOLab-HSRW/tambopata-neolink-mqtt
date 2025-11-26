@@ -2,7 +2,7 @@
 
 This project compiles Neolink, Mosquitto MQTT Broker, and Python MQTT Client services in a Docker compose container. Neolink is a small program that acts as a proxy between Reolink IP cameras and normal RTSP clients. The neolink will communicate with the client through the MQTT Broker. 
 
-The client has a scheduler loop that runs in the background to automatically capture images from different PTZ presets every noon (12.00) both when the infrared light is on and off (alternating between both). In addition to that, some manual controls are accessible when you attach to the service.
+The client has a scheduler loop that runs in the background to automatically capture images from different PTZ presets according to the configured time (from environment variables) alternating between both infrared filter mode (on/off). In addition to that, some manual controls are accessible and is required if you want to assign new PTZ presets.
 
 ## Setup 
 
