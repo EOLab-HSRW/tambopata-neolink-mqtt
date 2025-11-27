@@ -100,9 +100,9 @@ def upload_to_nextcloud(local_filename):
 
 # ====================== TOPICS & PATHS ======================
 # Lens details
-lens_name = 'USERNAME-0'
-lens_0_name = 'USERNAME-0'
-lens_1_name = 'USERNAME-1'
+lens_name = os.environ.get('LENS_NAME', 'tambopata-0')
+lens_0_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
+lens_1_name = os.environ.get('LENS_1_NAME', 'tambopata-1')
 
 # Topics
 status_topic = "neolink/status"

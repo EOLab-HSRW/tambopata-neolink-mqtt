@@ -44,6 +44,8 @@ services:
       - NEXTCLOUD_PASSWORD=***
       - MQTT_USERNAME=***
       - MQTT_PASSWORD=***
+      - LENS_0_NAME=tambopata-0 # Must be the same as in neolink config.toml
+      - LENS_1_NAME=tambopata-1 # Must be the same as in neolink config.toml
     networks:
       - mqtt_default
     depends_on:
