@@ -85,11 +85,11 @@ credentials = ["USERNAME", "PASSWORD"] # mqtt server login details
 
 [[cameras]]
 name = "USERNAME-0"
-username = "USERNAME"
-password = "PASSWORD"
-# address = "address"
-# If you use a battery camera: **Instead** of an `address` supply the uid
-uid = "UID"
+username = "YOUR_USERNAME"
+password = "YOUR_PASSWORD"
+# address = "ADDRESS"
+# If you use a battery camera: **Instead** of an `address`, supply the uid
+uid = "YOUR_UID"
 push_notifications = false
 debug = false
 discovery = "cellular"
@@ -130,11 +130,11 @@ on_client = true # Should pause when no rtsp client
 
 [[cameras]]
 name = "USERNAME-1"
-username = "USERNAME"
-password = "PASSWORD"
-# address = "address"
-# If you use a battery camera: **Instead** of an `address` supply the uid
-uid = "UID"
+username = "YOUR_USERNAME"
+password = "YOUR_PASSWORD"
+# address = "ADDRESS"
+# If you use a battery camera: **Instead** of an `address`, supply the uid
+uid = "YOUR_UID"
 push_notifications = false
 debug = false
 discovery = "cellular"

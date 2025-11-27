@@ -32,8 +32,8 @@ if MODE == "manual":
 # MQTT Broker details
 broker = 'mosquitto'
 port = 1883
-username = 'USERNAME'
-password = 'PASSWORD'
+username = 'YOUR_USERNAME'
+password = 'YOUR_PASSWORD'
 client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
 
 # ====================== NEXTCLOUD WEBDAV SETUP ======================

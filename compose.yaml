@@ -6,9 +6,6 @@ services:
       - ./mqtt/config:/mosquitto/config
       - ./mqtt/data:/mosquitto/data
       - ./mqtt/log:/mosquitto/log
-    ports:
-      - 1883:1883
-      - 9001:9001
     stdin_open: true
     tty: true
     networks:
@@ -41,10 +38,10 @@ services:
       - START_PRESET=0
       - END_PRESET=3
       - SCHEDULED_TIMES=16:30,17:00,17:30
-      - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/USERNAME/
+      - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/YOUR_USERNAME/
       - NEXTCLOUD_TARGET_DIR=/Photos
-      - NEXTCLOUD_USERNAME=USERNAME
-      - NEXTCLOUD_PASSWORD=PASSWORD
+      - NEXTCLOUD_USERNAME=***
+      - NEXTCLOUD_PASSWORD=***
     networks:
       - mqtt_default
     depends_on:
