@@ -87,8 +87,6 @@ exit
 docker compose stop
 ```
 
-and continue to next subsection of the setup.
-
 ### Configuring Environment Variables and Neolink Config File
 
 #### Credentials
