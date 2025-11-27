@@ -63,14 +63,38 @@ docker compose exec mosquitto sh
 6. Create a new mosquitto user
 
 ```bash
-mosquitto_passwd -c /mosquitto/config/pwfile USERNAME
+mosquitto_passwd -c /mosquitto/config/pwfile <username>
 ```
 
-After running the above command, you will be prompted to type in a password for this user. Type the password below:
+After running the above command, you will be prompted to type in a password for this user. 
 
 ```bash
-Password: PASSWORD
-Reenter password: PASSWORD
+Password: <password>
+Reenter password: <password>
+```
+
+This credential will then be used by both Neolink and the MQTT client, make sure to edit them in **"./neolink/config.toml"** and the compose.yaml file:
+
+- In config.toml:
+
+```bash
+[mqtt]
+broker_addr = "mosquitto" # Address of the mqtt server
+port = 1883 # mqtt servers port
+credentials = ["USERNAME", "PASSWORD"] # mqtt server login details
+```
+
+- In compose.yaml:
+
+```bash
+mqtt-client-controller:
+    # ............. 
+
+    environment:
+    # .............
+      - MQTT_USERNAME=***
+      - MQTT_PASSWORD=***
+    # .............
 ```
 
 Then exit the bash

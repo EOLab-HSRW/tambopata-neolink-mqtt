@@ -42,6 +42,8 @@ services:
       - NEXTCLOUD_TARGET_DIR=/Photos
       - NEXTCLOUD_USERNAME=***
       - NEXTCLOUD_PASSWORD=***
+      - MQTT_USERNAME=***
+      - MQTT_PASSWORD=***
     networks:
       - mqtt_default
     depends_on:
