@@ -114,7 +114,6 @@ port = 1883 # mqtt servers port
 credentials = ["USERNAME", "PASSWORD"] # mqtt server login details
 
 [[cameras]]
-name = "tambopata-0"
 username = "YOUR_USERNAME" 
 password = "YOUR_PASSWORD"
 uid = "YOUR_UID"
@@ -127,7 +126,7 @@ mqtt-client-controller:
     # ............. 
 
     environment:
-      - NEOLINK_MODE=controller
+    # ..............
       - START_PRESET=0
       - END_PRESET=3
       - SCHEDULED_TIMES=16:30,17:00,17:30
@@ -137,9 +136,13 @@ mqtt-client-controller:
       - NEXTCLOUD_PASSWORD=***
       - MQTT_USERNAME=***
       - MQTT_PASSWORD=***
-      - LENS_0_NAME=tambopata-0 # Must be the same as in neolink config.toml
-      - LENS_1_NAME=tambopata-1 # Must be the same as in neolink config.toml
     # .............
+```
+
+Finally after all these are set, you can then start the compose container again:
+
+```bash
+docker compose up -d
 ```
 
 ### Accessing Manual Controls
