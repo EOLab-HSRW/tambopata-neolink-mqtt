@@ -35,17 +35,6 @@ services:
       - ./python_mqtt_client:/app/python_mqtt_client
     environment:
       - NEOLINK_MODE=controller
-      - START_PRESET=0
-      - END_PRESET=3
-      - SCHEDULED_TIMES=16:30,17:00,17:30
-      - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/YOUR_USERNAME/
-      - NEXTCLOUD_TARGET_DIR=/Photos
-      - NEXTCLOUD_USERNAME=***
-      - NEXTCLOUD_PASSWORD=***
-      - MQTT_USERNAME=***
-      - MQTT_PASSWORD=***
-      - LENS_0_NAME=tambopata-0 # Must be the same as in neolink config.toml
-      - LENS_1_NAME=tambopata-1 # Must be the same as in neolink config.toml
     networks:
       - mqtt_default
     depends_on:
@@ -62,8 +51,6 @@ services:
       - ./python_mqtt_client:/app/python_mqtt_client
     environment:
       - NEOLINK_MODE=manual
-      - START_PRESET=0
-      - END_PRESET=3
     networks:
       - mqtt_default
     depends_on:
