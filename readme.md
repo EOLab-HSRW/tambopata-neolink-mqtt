@@ -28,6 +28,12 @@ After you are connected to the VPN then continue to the next step.
 git clone https://github.com/EOLab-HSRW/tambopata-neolink-mqtt.git
 ```
 
+then
+
+```bash
+cd tambopata-neolink-mqtt
+```
+
 2. the Mosquitto MQTT Broker service will expect this file to exist, we can use the touch command to create an empty file
 
 ```bash
@@ -85,23 +91,23 @@ exit
 docker compose stop
 ```
 
-### Configuring Environment Variables and Neolink Config File
+### Configuring Environment Variables (with .var file) and Neolink Config File
 
 #### Credentials
 
 After setting up the new user for the MQTT broker, you must modify the environment variables of the client and the config file of Neolink so both of them can connect to the broker and the Neolink itself can connect to the Reolink Cameras. 
 
-Additionally, since the captured images will be uploaded directly to the nextcloud drive using WebDAV, you must also set the credentials in the client's environment variables.
+Additionally, since the captured images will be uploaded directly to the nextcloud drive using WebDAV, credentials for this are also needed.
 
 #### Preset Range and Scheduled Capture Times
 
-Currently we only have 4 presets for the image capture automation (preset 0 to 3). After you have more/new presets that you had assigned with the manual controls, then you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). 
+Currently we only have 4 presets for the image capture automation (preset 0 to 3). After you have new presets that you had assigned with the manual controls, then simply define them in the .env file. 
 
 You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time (Camera time is UTC, local time of Lima - Peru is UTC-05:00).
 
 #### Set these up
 
-- In config.toml:
+- In neolink/config.toml:
 
 ```bash
 [mqtt]
@@ -115,25 +121,39 @@ password = "YOUR_PASSWORD"
 uid = "YOUR_UID"
 ```
 
-- In compose.yaml:
+Then copy and edit the .env.example file:
 
 ```bash
-mqtt-client-controller:
-    # ............. 
+cp .env.example .env
 
-    environment:
-    # ..............
-      - START_PRESET=0
-      - END_PRESET=3
-      - SCHEDULED_TIMES=16:30,17:00,17:30
-      - NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/YOUR_USERNAME/
-      - NEXTCLOUD_TARGET_DIR=/Photos
-      - NEXTCLOUD_USERNAME=***
-      - NEXTCLOUD_PASSWORD=***
-      - MQTT_USERNAME=***
-      - MQTT_PASSWORD=***
-    # .............
+nano .env                    # configure variables
 ```
+
+```bash
+# .env.example
+# Copy this file to .env and fill in your secrets and configurations
+
+# === preset configuration ===
+START_PRESET=0
+END_PRESET=3
+
+# === Scheduled times (comma-separated HH:MM) ===
+SCHEDULED_TIMES=06:30,12:00,18:00,23:45
+
+# === MQTT Broker ===
+MQTT_USERNAME=your_mqtt_user
+MQTT_PASSWORD=your_mqtt_password
+
+# === Nextcloud WebDAV Upload (controller only) ===
+NEXTCLOUD_WEBDAV_URL=https://cloud.eolab.de/remote.php/dav/files/your_nextcloud_username/
+NEXTCLOUD_TARGET_DIR=/Photos
+NEXTCLOUD_USERNAME=your_nextcloud_username
+NEXTCLOUD_PASSWORD=your_nextcloud_app_password
+
+# === Camera configuration (must be the same as in Neolink config.toml file) ===
+LENS_0_NAME=tambopata-0 
+LENS_1_NAME=tambopata-1
+``` 
 
 Finally after all these are set, you can then start the compose container again:
 
@@ -171,8 +191,6 @@ You can detach after you close the connection with the sequence **CTRL+P -> CTRL
 Contributors will be welcomed and appreciated to fix this issue with the manual control service! :)
 
 ## References
-
-Thank you so much for the contributors and team from Neolink, Paho, and Mosquitto for making this project possible!
 
 ### Neolink
 
