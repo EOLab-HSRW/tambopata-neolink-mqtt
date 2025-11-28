@@ -14,17 +14,24 @@ from datetime import datetime, timedelta
 from threading import Thread, Timer
 from queue import Queue
 from typing import Tuple
-
+from pathlib import Path
+from dotenv import load_dotenv
 
 # ====================== CONFIG & MODE ======================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logging.info("Neolink MQTT Client starting...")
 
+# Load .env file
+try:
+    load_dotenv()
+    logging.info("Environment variables loaded")
+except Exception as e:
+    logging.error(f"Failed to load environment variables: {e}, using defaults where applicable")
+
 MODE = os.environ.get("NEOLINK_MODE", "controller").lower()
 if MODE not in ["controller", "manual"]:
     logging.error(f"Invalid NEOLINK_MODE='{MODE}'. Falling back to 'controller'.")
     MODE = "controller"
-
 logging.info(f"=== Running in {MODE.upper()} mode ===")
 if MODE == "manual":
     logging.info("Type 'help' for commands, Ctrl+C to exit")
@@ -100,7 +107,7 @@ def upload_to_nextcloud(local_filename):
 
 # ====================== TOPICS & PATHS ======================
 # Lens details
-lens_name = os.environ.get('LENS_NAME', 'tambopata-0')
+lens_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
 lens_0_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
 lens_1_name = os.environ.get('LENS_1_NAME', 'tambopata-1')
 
@@ -143,7 +150,7 @@ os.makedirs(save_dir, exist_ok=True)
 
 # Parse SCHEDULED_TIMES env var into list of (hour, minute) tuples
 def parse_schedule_times() -> list[tuple[int, int]]:
-    raw = os.getenv("SCHEDULED_TIMES", "12:00")
+    raw = os.getenv("SCHEDULED_TIMES", "17:00")
     times = []
     seen = set()
 
@@ -422,13 +429,6 @@ def assign_preset(client, preset_id, name):
     else:
         logging.warning(f"Failed to send assign preset {preset_id} '{name}' command to {ptz_assign_topic}, rc={result.rc}")
 
-# def request_presets_report(client):
-#     result = client.publish(ptz_preset_query_topic, "", qos=1, retain=False)
-#     if result.rc == 0:
-#         logging.info(f"Sent PTZ presets report request to {ptz_preset_query_topic}")
-#     else:
-#         logging.warning(f"Failed to send PTZ presets report request to {ptz_preset_query_topic}, rc={result.rc}")
-
 def wakeup_both_lenses(client, minutes=10):
     payload = str(minutes)
     result_0 = client.publish(wakeup_topic_0, payload, qos=1, retain=False)
@@ -535,9 +535,6 @@ def stdin_loop(queue: Queue):
             elif line == 'a':
                 command_queue.put(('assign',))
                 logging.info("Enqueued assign preset")
-            # elif line == 'p':
-            #     command_queue.put(('presets_report',))
-            #     logging.info("Enqueued presets report request")
             elif line == 'd':
                 command_queue.put(('custom_capture',))
                 logging.info("Enqueued custom capture sequence")
@@ -582,8 +579,6 @@ async def process_commands(client):
             trigger_snapshot(client)
         elif cmd_type == 'battery':
             query_battery(client)
-        # elif cmd_type == 'presets_report':
-        #     request_presets_report(client)
         elif cmd_type == 'assign':
             async with stdin_lock:
                 pid = await loop.run_in_executor(None, lambda: input("Preset ID: "))
@@ -663,28 +658,6 @@ async def scheduler(client):
             logging.error(f"Error in scheduler loop: {e}", exc_info=True)
             await asyncio.sleep(60)  # no spam on error
 
-
-# def time_to_next_noon():
-#     global daily_hour, daily_minute
-#     now = datetime.now()
-#     next_noon = now.replace(hour=daily_hour, minute=daily_minute, second=0, microsecond=0)  
-#     if now >= next_noon:
-#         next_noon += timedelta(days=1)
-#     return (next_noon - now).total_seconds()
-
-# async def scheduler(client):
-#     while not stop_event.is_set():
-#         seconds = time_to_next_noon()
-#         logging.info(f"Next scheduled capture in {seconds/3600:.2f} hours")
-#         try:
-#             await asyncio.wait_for(stop_event.wait(), timeout=seconds)
-#             break
-#         except asyncio.TimeoutError:
-#             pass
-#         logging.info("⏰ Scheduled time reached → starting daily capture")
-#         wakeup_both_lenses(client, minutes=10)
-#         await asyncio.sleep(20)
-#         await perform_daily_capture(client, event_type="alt")
 
 # ====================== MAIN ======================
 async def main():
