@@ -22,15 +22,13 @@ After you are connected to the VPN then continue to the next step.
 
 ### Docker Compose Container
 
-1. Create new directory and cd to it
-
-2. Clone this repo
+1. Clone this repo
 
 ```bash
-git clone https://github.com/EOLab-HSRW/USERNAME-neolink-mqtt.git
+git clone https://github.com/EOLab-HSRW/tambopata-neolink-mqtt.git
 ```
 
-3. the Mosquitto MQTT Broker service will expect this file to exist, we can use the touch command to create an empty file
+2. the Mosquitto MQTT Broker service will expect this file to exist, we can use the touch command to create an empty file
 
 ```bash
 touch ./mqtt/config/pwfile
@@ -42,13 +40,13 @@ Then change the file permission to “0700” as expected by the service
 sudo chmod 0700 ./mqtt/config/pwfile
 ```
 
-4. Build the docker compose images
+3. Build the docker compose images
 
 ```bash
 docker compose build
 ```
 
-5. Run the compose container detached
+4. Run the compose container detached
 
 ```bash
 docker compose up -d
@@ -60,7 +58,7 @@ Then use exec to run commands on the MQTT Broker container
 docker compose exec mosquitto sh
 ```
 
-6. Create a new mosquitto user
+5. Create a new mosquitto broker user
 
 ```bash
 mosquitto_passwd -c /mosquitto/config/pwfile <username>
@@ -81,7 +79,7 @@ Then exit the bash
 exit
 ```
 
-7. Stop the compose container
+6. Stop the compose container
 
 ```bash
 docker compose stop
@@ -91,7 +89,7 @@ docker compose stop
 
 #### Credentials
 
-After setting up the new user for the MQTT broker, you must modify the environtment variables of the client and the config file of Neolink so both of them can connect to the broker and the Neolink itself can connect to the Reolink Cameras. 
+After setting up the new user for the MQTT broker, you must modify the environment variables of the client and the config file of Neolink so both of them can connect to the broker and the Neolink itself can connect to the Reolink Cameras. 
 
 Additionally, since the captured images will be uploaded directly to the nextcloud drive using WebDAV, you must also set the credentials in the client's environment variables.
 
@@ -99,7 +97,7 @@ Additionally, since the captured images will be uploaded directly to the nextclo
 
 Currently we only have 4 presets for the image capture automation (preset 0 to 3). After you have more/new presets that you had assigned with the manual controls, then you can edit the environment variables of the automation service in the **compose.yaml** file (START_PRESET and END_PRESET). 
 
-You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time (Camera time is UTC, Local time of Lima - Peru is UTC-05:00).
+You can also configure the daily capture time by editing the SCHEDULED_TIMES (A list of tuple with 24H format), be aware that the camera is 5 hour ahead than the local time (Camera time is UTC, local time of Lima - Peru is UTC-05:00).
 
 #### Set these up
 
