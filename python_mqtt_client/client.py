@@ -310,7 +310,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 now = datetime.now()
                 local_now = now - timedelta(hours=5)
                 date_str = local_now.strftime("%d.%m.%Y")
-                timestamp = local_now.strftime("%H-%M-%S")
+                timestamp = local_now.strftime("%H-%M")
                 lens_id = "wide" if lens_0_name in msg.topic else "zoom"
                 subdir = os.path.join(save_dir, date_str)
                 os.makedirs(subdir, exist_ok=True)
@@ -318,11 +318,11 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 if is_capture_sequence:
                     subsubdir = os.path.join(subdir, "from_capture_sequence")
                     os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"p{current_preset}_{lens_id}_{ir_mode}_{timestamp}.jpg")
+                    filename = os.path.join(subsubdir, f"PE-TNR_{lens_id}_{ir_mode}_{current_preset}_{timestamp}.jpg")
                 else:
                     subsubdir = os.path.join(subdir, "manual_snapshots")
                     os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"preset-{current_preset or 'none'}_{lens_id}_infrared-{ir_mode}_{timestamp}.jpg")
+                    filename = os.path.join(subsubdir, f"PE-TNR_{lens_id}_infrared-{ir_mode}_preset-{current_preset or 'none'}_{timestamp}.jpg")
 
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
