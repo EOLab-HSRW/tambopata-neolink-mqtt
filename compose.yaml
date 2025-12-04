@@ -34,7 +34,7 @@ services:
     volumes:
       - ./python_mqtt_client:/app/python_mqtt_client
     environment:
-      - NEOLINK_MODE=controller
+      NEOLINK_MODE: controller
     networks:
       - mqtt_default
     depends_on:
@@ -50,7 +50,7 @@ services:
     volumes:
       - ./python_mqtt_client:/app/python_mqtt_client
     environment:
-      - NEOLINK_MODE=manual
+      NEOLINK_MODE: manual
     networks:
       - mqtt_default
     depends_on:
