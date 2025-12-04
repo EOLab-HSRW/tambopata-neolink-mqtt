@@ -121,12 +121,12 @@ password = "YOUR_PASSWORD"
 uid = "YOUR_UID"
 ```
 
-Then copy and edit the .env.example file:
+Then copy and edit the .env.example file to the client directory:
 
 ```bash
-cp .env.example .env
+cp .env.example python_mqtt_client/.env
 
-nano .env                    # configure variables
+nano python_mqtt_client/.env               # configure variables
 ```
 
 ```bash
@@ -153,6 +153,9 @@ NEXTCLOUD_PASSWORD=your_nextcloud_app_password
 # === Camera configuration (must be the same as in Neolink config.toml file) ===
 LENS_0_NAME=tambopata-0 
 LENS_1_NAME=tambopata-1
+
+# === Local capture retention (in hours) ===
+LOCAL_KEEP_HOURS=24
 ``` 
 
 Finally after all these are set, you can then start the compose container again:
