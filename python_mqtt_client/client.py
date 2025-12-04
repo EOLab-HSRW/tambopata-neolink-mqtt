@@ -24,7 +24,7 @@ logging.info("Neolink MQTT Client starting...")
 # Load .env file
 try:
     load_dotenv()
-    logging.info("Environment variables loaded")
+    logging.info(".env file loaded successfully")
 except Exception as e:
     logging.error(f"Failed to load environment variables: {e}, using defaults where applicable")
 
@@ -39,71 +39,193 @@ if MODE == "manual":
 # MQTT Broker details
 broker = 'mosquitto'
 port = 1883
-username = os.environ.get('MQTT_USERNAME')
-password = os.environ.get('MQTT_PASSWORD')
+username = str(os.environ.get('MQTT_USERNAME'))
+password = str(os.environ.get('MQTT_PASSWORD'))
 client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
 
 # ====================== NEXTCLOUD WEBDAV SETUP ======================
 
+keep_hours = float(os.environ.get('LOCAL_KEEP_HOURS', '24'))
+
+def cleanup_local_captures(keep_period: int = 24):
+    """
+    Delete local captures older than X hours.
+    Called after each successful upload.
+    """
+    global save_dir
+    cutoff = datetime.now() - timedelta(hours=keep_period)
+    deleted_count = 0
+
+    for root, dirs, files in os.walk(save_dir):
+        for file in files:
+            if not file.lower().endswith('.jpg'):
+                continue
+            filepath = os.path.join(root, file)
+            try:
+                file_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+                if file_time < cutoff:
+                    os.remove(filepath)
+                    deleted_count += 1
+                    # log every 50 deletions
+                    if deleted_count % 50 == 0:
+                        logging.info(f"Cleaned up {deleted_count} old local images...")
+            except Exception as e:
+                logging.debug(f"Failed to delete {filepath}: {e}")
+
+    # silent failure
+    if deleted_count > 0:
+        logging.info(f"Local cleanup complete — deleted {deleted_count} files older than {keep_period}h")
+
+    # remove empty folders
+    for root, dirs, files in os.walk(save_dir, topdown=False):
+        for d in dirs:
+            dirpath = os.path.join(root, d)
+            try:
+                if not os.listdir(dirpath):  # empty
+                    os.rmdir(dirpath)
+            except:
+                pass
+
+# def upload_to_nextcloud(local_filename):
+#     """Upload file to Nextcloud /Photos/YYYY-MM-DD/ using raw WebDAV (PUT + MKCOL)."""
+#     if MODE != "controller" or not is_capture_sequence:
+#         return  # Only sequence images from controller
+
+#     try:
+#         webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/') 
+#         username = os.environ.get('NEXTCLOUD_USERNAME')
+#         password = os.environ.get('NEXTCLOUD_PASSWORD')
+#         if not all([webdav_url, username, password]):
+#             logging.warning("Nextcloud env vars missing – skipping upload")
+#             return
+
+#         now = datetime.now()
+#         local_now = now - timedelta(hours=5)
+#         date_str = local_now.strftime("%Y-%m-%d")
+#         base_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').lstrip('/')
+#         remote_dir = f"{base_dir}/{date_str}"  # Photos/YYYY-MM-DD/
+#         remote_filename = f"{webdav_url}/{remote_dir}/{os.path.basename(local_filename)}"
+
+#         # Auth
+#         auth = (username, password)
+#         headers = {'Content-Type': 'image/jpg'}  
+
+#         # MKCOL for base dir (with PROPFIND check)
+#         base_url = f"{webdav_url}/{base_dir}"
+#         propfind_resp = requests.request('PROPFIND', base_url, auth=auth, headers={'Depth': '0'})
+#         logging.debug(f"PROPFIND {base_dir}: status {propfind_resp.status_code}")
+#         if propfind_resp.status_code not in (200, 207):  # Not found/exists
+#             mkcol_resp = requests.request('MKCOL', base_url, auth=auth)
+#             logging.info(f"Created base dir {base_dir}: status {mkcol_resp.status_code}")
+#             if mkcol_resp.status_code != 201:
+#                 logging.warning(f"Base MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
+
+#         # MKCOL for date subdir
+#         subdir_url = f"{webdav_url}/{remote_dir}"
+#         propfind_resp = requests.request('PROPFIND', subdir_url, auth=auth, headers={'Depth': '0'})
+#         logging.debug(f"PROPFIND {remote_dir}: status {propfind_resp.status_code}")
+#         if propfind_resp.status_code not in (200, 207):
+#             mkcol_resp = requests.request('MKCOL', subdir_url, auth=auth)
+#             logging.info(f"Created subdir {remote_dir}: status {mkcol_resp.status_code}")
+#             if mkcol_resp.status_code != 201:
+#                 logging.warning(f"Subdir MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
+
+#         # Upload file with retries
+#         with open(local_filename, 'rb') as f:
+#             for attempt in range(3):
+#                 upload_resp = requests.put(remote_filename, data=f, auth=auth, headers=headers)
+#                 logging.debug(f"Upload attempt {attempt+1} to {remote_filename}: status {upload_resp.status_code}")
+#                 if upload_resp.status_code in (200, 201, 204):  # Success codes per WebDAV docs
+#                     logging.info(f"Uploaded to Nextcloud: {remote_dir}/{os.path.basename(local_filename)}")
+#                     return
+#                 else:
+#                     logging.warning(f"Upload attempt {attempt+1} failed: {upload_resp.status_code} - {upload_resp.text[:200]}")
+#                     f.seek(0)  # Reset file pointer for retry
+#                     time.sleep(2 ** attempt)
+#         logging.error(f"Failed to upload {local_filename} after 3 retries")
+#     except Exception as e:
+#         logging.error(f"Nextcloud upload setup failed: {e}")
+#     finally:
+#         # Always clean up old files
+#         try:
+#             global keep_hours
+#             cleanup_local_captures(keep_period=keep_hours)
+#         except:
+#             pass  # never crash the main loop
+
 def upload_to_nextcloud(local_filename):
-    """Upload file to Nextcloud /Photos/YYYY-MM-DD/ using raw WebDAV (PUT + MKCOL)."""
+    """Upload to custom Nextcloud path using only NEXTCLOUD_TARGET_DIR."""
     if MODE != "controller" or not is_capture_sequence:
-        return  # Only sequence images from controller
+        return
 
     try:
-        webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/') 
+        webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/')
         username = os.environ.get('NEXTCLOUD_USERNAME')
         password = os.environ.get('NEXTCLOUD_PASSWORD')
+        target_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').strip('/')
         if not all([webdav_url, username, password]):
-            logging.warning("Nextcloud env vars missing – skipping upload")
+            logging.warning("Nextcloud credentials missing – skipping upload")
             return
 
-        now = datetime.now()
-        local_now = now - timedelta(hours=5)
-        date_str = local_now.strftime("%Y-%m-%d")
-        base_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').lstrip('/')
-        remote_dir = f"{base_dir}/{date_str}"  # Photos/YYYY-MM-DD/
-        remote_filename = f"{webdav_url}/{remote_dir}/{os.path.basename(local_filename)}"
+        # Parse filename: PE-TNR_wide_off_2_09-30.jpg
+        basename = os.path.basename(local_filename)
+        try:
+            parts = basename.split('_')
+            lens_id = parts[1]        # wide or zoom
+            ir_mode = parts[2]        # on/off/auto
+            preset = parts[3]         # 0,1,2,3
+        except IndexError:
+            logging.warning(f"Cannot parse filename: {basename}")
+            return
 
-        # Auth
+        # Use local time (-5h already applied when saving)
+        local_now = datetime.now() - timedelta(hours=5)
+        date_str = local_now.strftime("%d.%m.%Y")  # 03.12.2025
+
+        # Build path exactly as you want
+        remote_parts = [
+            target_dir.lstrip('/'),           # e.g. "Shared/Reolink-Camera-Tambopata-1"
+            date_str,                         # 03.12.2025
+            lens_id,                          # wide or zoom
+            ir_mode,                          # on/off/auto
+            f"preset_{preset}"
+        ]
+        remote_dir = "/".join(remote_parts)
+        remote_filename = f"{webdav_url}/{remote_dir}/{basename}"
+
         auth = (username, password)
-        headers = {'Content-Type': 'image/jpg'}  
+        headers = {'Content-Type': 'image/jpg'}
 
-        # MKCOL for base dir (with PROPFIND check)
-        base_url = f"{webdav_url}/{base_dir}"
-        propfind_resp = requests.request('PROPFIND', base_url, auth=auth, headers={'Depth': '0'})
-        logging.debug(f"PROPFIND {base_dir}: status {propfind_resp.status_code}")
-        if propfind_resp.status_code not in (200, 207):  # Not found/exists
-            mkcol_resp = requests.request('MKCOL', base_url, auth=auth)
-            logging.info(f"Created base dir {base_dir}: status {mkcol_resp.status_code}")
-            if mkcol_resp.status_code != 201:
-                logging.warning(f"Base MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
+        # Recursively create directories
+        current_url = webdav_url
+        for part in remote_parts:
+            current_url += f"/{part}"
+            resp = requests.request("PROPFIND", current_url, auth=auth, headers={"Depth": "0"}, timeout=10)
+            if resp.status_code not in (200, 207):
+                mkcol = requests.request("MKCOL", current_url, auth=auth, timeout=10)
+                if mkcol.status_code == 201:
+                    logging.info(f"Created folder: {current_url}")
+                elif mkcol.status_code != 405:
+                    logging.warning(f"MKCOL failed ({mkcol.status_code})")
 
-        # MKCOL for date subdir
-        subdir_url = f"{webdav_url}/{remote_dir}"
-        propfind_resp = requests.request('PROPFIND', subdir_url, auth=auth, headers={'Depth': '0'})
-        logging.debug(f"PROPFIND {remote_dir}: status {propfind_resp.status_code}")
-        if propfind_resp.status_code not in (200, 207):
-            mkcol_resp = requests.request('MKCOL', subdir_url, auth=auth)
-            logging.info(f"Created subdir {remote_dir}: status {mkcol_resp.status_code}")
-            if mkcol_resp.status_code != 201:
-                logging.warning(f"Subdir MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
-
-        # Upload file with retries
-        with open(local_filename, 'rb') as f:
-            for attempt in range(3):
-                upload_resp = requests.put(remote_filename, data=f, auth=auth, headers=headers)
-                logging.debug(f"Upload attempt {attempt+1} to {remote_filename}: status {upload_resp.status_code}")
-                if upload_resp.status_code in (200, 201, 204):  # Success codes per WebDAV docs
-                    logging.info(f"Uploaded to Nextcloud: {remote_dir}/{os.path.basename(local_filename)}")
+        # Upload with retry
+        with open(local_filename, "rb") as f:
+            for attempt in range(1, 4):
+                resp = requests.put(remote_filename, data=f, auth=auth, headers=headers, timeout=30)
+                if resp.status_code in (200, 201, 204):
+                    logging.info(f"Uploaded → {remote_dir}/{basename}")
                     return
-                else:
-                    logging.warning(f"Upload attempt {attempt+1} failed: {upload_resp.status_code} - {upload_resp.text[:200]}")
-                    f.seek(0)  # Reset file pointer for retry
-                    time.sleep(2 ** attempt)
-        logging.error(f"Failed to upload {local_filename} after 3 retries")
+                f.seek(0)
+                time.sleep(2 ** attempt)
+        logging.error(f"Upload failed after 3 attempts: {basename}")
+
     except Exception as e:
-        logging.error(f"Nextcloud upload setup failed: {e}")
+        logging.error(f"Nextcloud error: {e}", exc_info=True)
+    finally:
+        try:
+            cleanup_local_captures(keep_period=keep_hours)
+        except:
+            pass
 
 # ====================== TOPICS & PATHS ======================
 # Lens details
@@ -150,7 +272,7 @@ os.makedirs(save_dir, exist_ok=True)
 
 # Parse SCHEDULED_TIMES env var into list of (hour, minute) tuples
 def parse_schedule_times() -> list[tuple[int, int]]:
-    raw = os.getenv("SCHEDULED_TIMES", "17:00")
+    raw = os.environ.get('SCHEDULED_TIMES', '12:00')
     times = []
     seen = set()
 
@@ -306,26 +428,43 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                         padded_bytes = payload_bytes + b'=' * pads_needed
                         img_bytes = base64.b64decode(padded_bytes, validate=False)  # Ignore padding errors
 
-                # Save with date subfolder
+                # Build file path
                 now = datetime.now()
                 local_now = now - timedelta(hours=5)
-                date_str = local_now.strftime("%d.%m.%Y")
-                timestamp = local_now.strftime("%H-%M")
-                lens_id = "wide" if lens_0_name in msg.topic else "zoom"
-                subdir = os.path.join(save_dir, date_str)
-                os.makedirs(subdir, exist_ok=True)
+                date_str   = local_now.strftime("%d.%m.%Y")          
+                timestamp  = local_now.strftime("%H-%M")             
+                lens_id    = "wide" if lens_0_name in msg.topic else "zoom"
 
+                # Base paths
+                base_dir   = os.path.join(save_dir, date_str)                    
+                type_dir   = "from_capture_sequence" if is_capture_sequence else "manual_snapshots"
+                type_path  = os.path.join(base_dir, type_dir)                    # …/from_capture_sequence or …/manual_snapshots
+
+                # Deep hierarchy
+                lens_path  = os.path.join(type_path, lens_id)                     # …/wide or …/zoom
+                ir_path    = os.path.join(lens_path, ir_mode)                     # …/on, …/off, …/auto
+                preset_val = str(current_preset) if current_preset is not None else "none"
+                preset_path = os.path.join(ir_path, f"preset_{preset_val}")       # …/preset_n
+
+                # Create all directories
+                os.makedirs(preset_path, exist_ok=True)
+
+                # Final filename
                 if is_capture_sequence:
-                    subsubdir = os.path.join(subdir, "from_capture_sequence")
-                    os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"PE-TNR_{lens_id}_{ir_mode}_{current_preset}_{timestamp}.jpg")
+                    filename = os.path.join(
+                        preset_path,
+                        f"PE-TNR_{lens_id}_{ir_mode}_{current_preset}_{timestamp}.jpg"
+                    )
                 else:
-                    subsubdir = os.path.join(subdir, "manual_snapshots")
-                    os.makedirs(subsubdir, exist_ok=True)
-                    filename = os.path.join(subsubdir, f"PE-TNR_{lens_id}_infrared-{ir_mode}_preset-{current_preset or 'none'}_{timestamp}.jpg")
+                    filename = os.path.join(
+                        preset_path,
+                        f"PE-TNR_{lens_id}_infrared-{ir_mode}_preset-{preset_val}_{timestamp}.jpg"
+                    )
 
+                # Write file
                 with open(filename, "wb") as f:
                     f.write(img_bytes)
+
                 logging.info(f"Saved → {filename} ({payload_len} bytes)")
                 upload_to_nextcloud(filename)
             except Exception as e:
