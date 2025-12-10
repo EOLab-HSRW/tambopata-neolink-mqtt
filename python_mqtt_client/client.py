@@ -376,11 +376,10 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
             if msg.retain:
                 logging.debug(f"Ignoring retained preview from {msg.topic}")
                 return
-                # PREVENT CONTROLLER FROM SAVING MANUAL SNAPSHOTS
+            # PREVENT CONTROLLER FROM SAVING MANUAL SNAPSHOTS
             if MODE == "controller" and not is_capture_sequence:
                 logging.info("Controller ignoring manual snapshot (taken from manual client)")
                 return
-
             try:
                 payload_bytes = msg.payload
                 payload_len = len(payload_bytes)
@@ -616,17 +615,17 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
             # IR off first
             set_ir_control(client, 'off')
             ir_mode = 'off'
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             go_to_preset(client, i)
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             trigger_snapshot(client)
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
             # IR on second
             set_ir_control(client, 'on')
             ir_mode = 'on'
             await asyncio.sleep(2)
             trigger_snapshot(client)
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
 
     # Cleanup
     set_ir_control(client, 'auto')
