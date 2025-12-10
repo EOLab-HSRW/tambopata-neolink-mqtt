@@ -615,17 +615,17 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
             # IR off first
             set_ir_control(client, 'off')
             ir_mode = 'off'
-            await asyncio.sleep(1)
-            go_to_preset(client, i)
             await asyncio.sleep(2)
-            trigger_snapshot(client)
+            go_to_preset(client, i)
             await asyncio.sleep(5)
+            trigger_snapshot(client)
+            await asyncio.sleep(30)
             # IR on second
             set_ir_control(client, 'on')
             ir_mode = 'on'
             await asyncio.sleep(2)
             trigger_snapshot(client)
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)
 
     # Cleanup
     set_ir_control(client, 'auto')
@@ -786,7 +786,7 @@ async def scheduler(client):
             logging.info(f"⏰ Scheduled time reached ({current_time}) → starting daily capture")
             
             wakeup_both_lenses(client, minutes=10)
-            await asyncio.sleep(20)
+            await asyncio.sleep(120)
             await perform_daily_capture(client, event_type="alt")
             
             # Optional: small delay after sequence to avoid double-triggering near midnight
