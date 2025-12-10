@@ -40,10 +40,10 @@ cd tambopata-neolink-mqtt
 touch ./mqtt/config/pwfile
 ```
 
-Then change the file permission to “0700” as expected by the service
+Then change the owner of the file to root as expected by the mosquitto service
 
 ```bash
-sudo chmod 0700 ./mqtt/config/pwfile
+sudo chown root ./mqtt/config/pwfile
 ```
 
 3. Build the docker compose images
