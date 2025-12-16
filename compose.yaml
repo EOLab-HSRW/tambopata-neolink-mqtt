@@ -17,8 +17,9 @@ services:
     container_name: neolink
     volumes:
       - ./neolink/config.toml:/etc/neolink.toml
+      - ./python_mqtt_client/captures:/shared/captures
     environment:
-      - NEO_LINK_MODE=mqtt-rtsp
+      - NEO_LINK_MODE=mqtt
     networks:
       - mqtt_default
     depends_on:
@@ -33,6 +34,7 @@ services:
     container_name: mqtt-client-controller
     volumes:
       - ./python_mqtt_client:/app/python_mqtt_client
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       NEOLINK_MODE: controller
     networks:
