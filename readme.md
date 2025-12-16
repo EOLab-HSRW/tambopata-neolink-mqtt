@@ -206,3 +206,7 @@ https://eclipse.dev/paho/files/paho.mqtt.python/html/index.html
 ### Mosquitto Local MQTT Broker
 
 https://mosquitto.org/
+
+### Docker Python API
+
+https://docker-py.readthedocs.io/en/stable/index.html
