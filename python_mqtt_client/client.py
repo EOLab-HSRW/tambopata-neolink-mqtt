@@ -10,12 +10,18 @@ import time
 import signal
 import select  # For non-blocking stdin on Unix/WSL
 import shutil
+import subprocess
+import concurrent.futures
+import shlex
+import docker
 from datetime import datetime, timedelta
 from threading import Thread, Timer
 from queue import Queue
 from typing import Tuple
 from pathlib import Path
 from dotenv import load_dotenv
+
+docker_client = docker.from_env()  # connects to host Docker daemon via socket
 
 # ====================== CONFIG & MODE ======================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,6 +51,11 @@ client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
 
 # ====================== NEXTCLOUD WEBDAV SETUP ======================
 
+NEXTCLOUD_WEBDAV_URL = os.environ.get('NEXTCLOUD_WEBDAV_URL', '').rstrip('/')
+NEXTCLOUD_USERNAME = os.environ.get('NEXTCLOUD_USERNAME', '')
+NEXTCLOUD_PASSWORD = os.environ.get('NEXTCLOUD_PASSWORD', '')
+NEXTCLOUD_TARGET_DIR = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Shared/Reolink-Camera-Tambopata-1').strip('/')
+
 keep_hours = float(os.environ.get('LOCAL_KEEP_HOURS', '24'))
 
 def cleanup_local_captures(keep_period: int = 24):
@@ -53,7 +64,9 @@ def cleanup_local_captures(keep_period: int = 24):
     Called after each successful upload.
     """
     global save_dir
-    cutoff = datetime.now() - timedelta(hours=keep_period)
+    now = datetime.now()
+    local_now = now - timedelta(hours=5)  # adjust to local time if needed
+    cutoff = local_now - timedelta(hours=keep_period)
     deleted_count = 0
 
     for root, dirs, files in os.walk(save_dir):
@@ -86,87 +99,18 @@ def cleanup_local_captures(keep_period: int = 24):
             except:
                 pass
 
-# def upload_to_nextcloud(local_filename):
-#     """Upload file to Nextcloud /Photos/YYYY-MM-DD/ using raw WebDAV (PUT + MKCOL)."""
-#     if MODE != "controller" or not is_capture_sequence:
-#         return  # Only sequence images from controller
-
-#     try:
-#         webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/') 
-#         username = os.environ.get('NEXTCLOUD_USERNAME')
-#         password = os.environ.get('NEXTCLOUD_PASSWORD')
-#         if not all([webdav_url, username, password]):
-#             logging.warning("Nextcloud env vars missing – skipping upload")
-#             return
-
-#         now = datetime.now()
-#         local_now = now - timedelta(hours=5)
-#         date_str = local_now.strftime("%Y-%m-%d")
-#         base_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').lstrip('/')
-#         remote_dir = f"{base_dir}/{date_str}"  # Photos/YYYY-MM-DD/
-#         remote_filename = f"{webdav_url}/{remote_dir}/{os.path.basename(local_filename)}"
-
-#         # Auth
-#         auth = (username, password)
-#         headers = {'Content-Type': 'image/jpg'}  
-
-#         # MKCOL for base dir (with PROPFIND check)
-#         base_url = f"{webdav_url}/{base_dir}"
-#         propfind_resp = requests.request('PROPFIND', base_url, auth=auth, headers={'Depth': '0'})
-#         logging.debug(f"PROPFIND {base_dir}: status {propfind_resp.status_code}")
-#         if propfind_resp.status_code not in (200, 207):  # Not found/exists
-#             mkcol_resp = requests.request('MKCOL', base_url, auth=auth)
-#             logging.info(f"Created base dir {base_dir}: status {mkcol_resp.status_code}")
-#             if mkcol_resp.status_code != 201:
-#                 logging.warning(f"Base MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
-
-#         # MKCOL for date subdir
-#         subdir_url = f"{webdav_url}/{remote_dir}"
-#         propfind_resp = requests.request('PROPFIND', subdir_url, auth=auth, headers={'Depth': '0'})
-#         logging.debug(f"PROPFIND {remote_dir}: status {propfind_resp.status_code}")
-#         if propfind_resp.status_code not in (200, 207):
-#             mkcol_resp = requests.request('MKCOL', subdir_url, auth=auth)
-#             logging.info(f"Created subdir {remote_dir}: status {mkcol_resp.status_code}")
-#             if mkcol_resp.status_code != 201:
-#                 logging.warning(f"Subdir MKCOL failed (status {mkcol_resp.status_code}) – trying upload anyway")
-
-#         # Upload file with retries
-#         with open(local_filename, 'rb') as f:
-#             for attempt in range(3):
-#                 upload_resp = requests.put(remote_filename, data=f, auth=auth, headers=headers)
-#                 logging.debug(f"Upload attempt {attempt+1} to {remote_filename}: status {upload_resp.status_code}")
-#                 if upload_resp.status_code in (200, 201, 204):  # Success codes per WebDAV docs
-#                     logging.info(f"Uploaded to Nextcloud: {remote_dir}/{os.path.basename(local_filename)}")
-#                     return
-#                 else:
-#                     logging.warning(f"Upload attempt {attempt+1} failed: {upload_resp.status_code} - {upload_resp.text[:200]}")
-#                     f.seek(0)  # Reset file pointer for retry
-#                     time.sleep(2 ** attempt)
-#         logging.error(f"Failed to upload {local_filename} after 3 retries")
-#     except Exception as e:
-#         logging.error(f"Nextcloud upload setup failed: {e}")
-#     finally:
-#         # Always clean up old files
-#         try:
-#             global keep_hours
-#             cleanup_local_captures(keep_period=keep_hours)
-#         except:
-#             pass  # never crash the main loop
-
-def upload_to_nextcloud(local_filename):
+async def upload_to_nextcloud(local_filename):
     """Upload to custom Nextcloud path using only NEXTCLOUD_TARGET_DIR."""
+    logging.info(f"Attempting upload for: {local_filename}")
+
     if MODE != "controller" or not is_capture_sequence:
         return
 
-    try:
-        webdav_url = os.environ.get('NEXTCLOUD_WEBDAV_URL').rstrip('/')
-        username = os.environ.get('NEXTCLOUD_USERNAME')
-        password = os.environ.get('NEXTCLOUD_PASSWORD')
-        target_dir = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Photos').strip('/')
-        if not all([webdav_url, username, password]):
-            logging.warning("Nextcloud credentials missing – skipping upload")
-            return
+    if not all([NEXTCLOUD_WEBDAV_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD]):
+        logging.warning("Nextcloud credentials missing – skipping upload")
+        return
 
+    try:
         # Parse filename: PE-TNR_wide_off_2_09-30.jpg
         basename = os.path.basename(local_filename)
         try:
@@ -179,30 +123,41 @@ def upload_to_nextcloud(local_filename):
             return
 
         # Use local time (-5h already applied when saving)
-        local_now = datetime.now() - timedelta(hours=5)
-        date_str = local_now.strftime("%d.%m.%Y")  # 03.12.2025
+        try:
+            dir_path = os.path.dirname(local_filename)
+            date_folder = os.path.basename(dir_path)  # e.g., "2025-12-16"
+            # Validate it's a date folder
+            datetime.strptime(date_folder, "%Y-%m-%d")
+            date_str = date_folder
+        except:
+            # Fallback to current (with -5h)
+            local_now = datetime.now() - timedelta(hours=5)
+            date_str = local_now.strftime("%Y-%m-%d")
 
         # Build path exactly as you want
         remote_parts = [
-            target_dir.lstrip('/'),           # e.g. "Shared/Reolink-Camera-Tambopata-1"
-            date_str,                         # 03.12.2025
+            NEXTCLOUD_TARGET_DIR.lstrip('/'),           # e.g. "Shared/Reolink-Camera-Tambopata-1"
+            date_str,                         # 2025-11-25
             lens_id,                          # wide or zoom
             ir_mode,                          # on/off/auto
             f"preset_{preset}"
         ]
         remote_dir = "/".join(remote_parts)
-        remote_filename = f"{webdav_url}/{remote_dir}/{basename}"
+        remote_filename = f"{NEXTCLOUD_WEBDAV_URL}/{remote_dir}/{basename}"
+        logging.info(f"Uploading to Nextcloud → {remote_filename}")
 
-        auth = (username, password)
-        headers = {'Content-Type': 'image/jpg'}
+        auth = (NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD)
+        headers = {'Content-Type': 'image/jpeg'}
 
         # Recursively create directories
-        current_url = webdav_url
+        current_url = NEXTCLOUD_WEBDAV_URL
         for part in remote_parts:
             current_url += f"/{part}"
             resp = requests.request("PROPFIND", current_url, auth=auth, headers={"Depth": "0"}, timeout=10)
+            logging.info(f"PROPFIND {current_url} → status {resp.status_code}")
             if resp.status_code not in (200, 207):
                 mkcol = requests.request("MKCOL", current_url, auth=auth, timeout=10)
+                logging.info(f"MKCOL {current_url} → status {mkcol.status_code} {mkcol.text[:200]}")
                 if mkcol.status_code == 201:
                     logging.info(f"Created folder: {current_url}")
                 elif mkcol.status_code != 405:
@@ -212,6 +167,7 @@ def upload_to_nextcloud(local_filename):
         with open(local_filename, "rb") as f:
             for attempt in range(1, 4):
                 resp = requests.put(remote_filename, data=f, auth=auth, headers=headers, timeout=30)
+                logging.info(f"PUT {remote_filename} → status {resp.status_code} {resp.text[:200]}")
                 if resp.status_code in (200, 201, 204):
                     logging.info(f"Uploaded → {remote_dir}/{basename}")
                     return
@@ -228,7 +184,9 @@ def upload_to_nextcloud(local_filename):
             pass
 
 # ====================== TOPICS & PATHS ======================
-# Lens details
+# Lens details 
+CAM_WIDE = os.environ.get('LENS_0_NAME', 'tambopata-0')
+CAM_ZOOM = os.environ.get('LENS_1_NAME', 'tambopata-1')
 lens_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
 lens_0_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
 lens_1_name = os.environ.get('LENS_1_NAME', 'tambopata-1')
@@ -430,7 +388,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 # Build file path
                 now = datetime.now()
                 local_now = now - timedelta(hours=5)
-                date_str   = local_now.strftime("%d.%m.%Y")          
+                date_str   = local_now.strftime("%Y-%m-%d")          
                 timestamp  = local_now.strftime("%H-%M")             
                 lens_id    = "wide" if lens_0_name in msg.topic else "zoom"
 
@@ -465,7 +423,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                     f.write(img_bytes)
 
                 logging.info(f"Saved → {filename} ({payload_len} bytes)")
-                upload_to_nextcloud(filename)
+                # upload_to_nextcloud(filename)
             except Exception as e:
                 logging.error(f"Failed to decode/save image from {msg.topic} (len={len(msg.payload)}): {e}. Hex preview: {msg.payload[:50].hex()}...")
         elif msg.topic == battery_level_topic:
@@ -496,7 +454,6 @@ def subscribe(client: mqtt_client.Client):
         (preview_topic_0, 0),
         (preview_topic_1, 0),
         (battery_level_topic, 0),
-        # (ptz_preset_status_topic, 0),
     ]
 
     for t, qos in topics:
@@ -557,6 +514,116 @@ def trigger_snapshot(client):
         logging.info(f"Sent trigger snapshot command to {preview_query_topic_1}")
     else:
         logging.warning(f"Failed to send trigger snapshot command to {preview_query_topic_1}, rc={result_1.rc}")
+
+def capture_rtsp_image(camera_name: str, lens: str) -> str | None:
+    """Capture image using neolink CLI and save to structured path."""
+
+    now = datetime.now()
+    local_now = now - timedelta(hours=5)
+    date_str = local_now.strftime("%Y-%m-%d")
+    timestamp = local_now.strftime("%H-%M-%S")
+
+    # Build exact path you want
+    path_parts = [
+        "/shared/captures", # shared path inside Docker container
+        date_str,
+        lens,
+        ir_mode,
+        f"preset_{current_preset}"
+    ]
+
+    full_dir = os.path.join(*path_parts)
+
+    filename = os.path.join(full_dir, f"PE-TNR_{lens}_{ir_mode}_{current_preset}_{timestamp}.jpeg")
+
+    # The full inner command
+    inner_cmd = f"neolink image --config /etc/neolink.toml --file-path {shlex.quote(filename)} {shlex.quote(camera_name)}"
+    
+    try:
+        result = docker_client.containers.get("neolink").exec_run(inner_cmd, demux=False)
+        if result.exit_code == 0:
+            logging.info(f"RTSP capture ({lens}): {filename}")
+            host_path = filename.replace("/shared/captures", "./captures")
+            return host_path
+        else:
+            logging.error(f"neolink image failed ({camera_name}): {result.output.decode()}")
+            return None
+    except Exception as e:
+        logging.error(f"Exec error ({camera_name}): {e}")
+        return None
+    
+    # cmd = [
+    #     "docker", "compose", "exec",
+    #     "-T",                     # No TTY (non-interactive)
+    #     "neolink",                # Container name
+    #     "/bin/sh", "-c",          # Shell wrapper
+    #     inner_cmd                 # The exact command
+    # ]
+
+    # try:
+    #     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    #     if result.returncode == 0:
+    #         if os.path.exists(filename.replace("/shared/captures", "./captures")):
+    #             logging.info(f"RTSP capture ({lens}): {filename}")
+    #             return filename.replace("/shared/captures", "./captures")  # Return host path
+    #         else:
+    #             logging.error(f"Capture succeeded but file missing: {filename}")
+    #             return None
+    #     else:
+    #         logging.error(f"neolink image failed ({camera_name}): {result.stderr.strip()}")
+    #         return None
+    # except subprocess.TimeoutExpired:
+    #     logging.error(f"Capture timeout ({camera_name})")
+    #     return None
+    # except Exception as e:
+    #     logging.error(f"Exec error ({camera_name}): {e}")
+    #     return None
+
+# def capture_rtsp_image_ffmpeg(lens: str) -> str | None:
+#     RTSP URLs from Neolink (always live)
+#     rtsp_urls = {
+#         "wide": f"rtsp://neolink:8554/{CAM_WIDE}/main",
+#         "zoom": f"rtsp://neolink:8554/{CAM_ZOOM}/main"
+#     }
+
+#     now = datetime.now()
+#     local_now = now - timedelta(hours=5)
+#     date_str = local_now.strftime("%Y-%m-%d")
+#     timestamp = local_now.strftime("%H-%M-%S")
+
+#     path_parts = [
+#         save_dir,
+#         date_str,
+#         lens,
+#         ir_mode,
+#         f"preset_{current_preset}"
+#     ]
+#     full_dir = os.path.join(*path_parts)
+#     os.makedirs(full_dir, exist_ok=True)
+
+#     filename = os.path.join(full_dir, f"PE-TNR_{lens}_{ir_mode}_{current_preset}_{timestamp}.jpg")
+
+#     cmd = [
+#         "ffmpeg",
+#         "-y",                     # overwrite
+#         "-rtsp_transport", "tcp", # stable
+#         "-i", rtsp_urls[lens],
+#         "-vframes", "1",          # one frame
+#         "-q:v", "2",              # high quality
+#         filename
+#     ]
+
+#     try:
+#         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+#         if result.returncode == 0 and os.path.exists(filename):
+#             logging.info(f"RTSP snapshot ({lens}): {filename}")
+#             return filename
+#         else:
+#             logging.error(f"ffmpeg failed ({lens}): {result.stderr}")
+#             return None
+#     except Exception as e:
+#         logging.error(f"RTSP capture error ({lens}): {e}")
+#         return None
 
 def assign_preset(client, preset_id, name):
     safe_name = name.replace(" ", "_")
@@ -633,6 +700,169 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
     is_capture_sequence = False
     logging.info("Daily capture sequence finished")
 
+async def rtsp_capture_sequence(client, start: int = start_preset, end: int = end_preset):
+    global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
+    logging.info(f"Starting RTSP capture sequence (presets {start_preset}→{end_preset})")
+    is_capture_sequence = True
+
+    captured_files = []  # Collect all files here
+
+    for preset in range(start_preset, end_preset + 1):
+        current_preset = preset
+        go_to_preset(client, preset)
+        await asyncio.sleep(5)  # let PTZ settle
+
+        # === IR OFF ===
+        set_ir_control(client, 'off')
+        ir_mode = 'off'
+        await asyncio.sleep(3)  # give IR time to turn off
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            wide_file = await asyncio.get_event_loop().run_in_executor(
+                pool, capture_rtsp_image, CAM_WIDE, "wide"
+            )
+
+        try:
+            if wide_file:
+                captured_files.append(wide_file)
+                logging.info(f"Appended wide_file: {wide_file}")
+        except Exception as e:
+            logging.error(f"Error appending wide_file: {e}")
+
+        # === IR ON ===
+        set_ir_control(client, 'on')
+        ir_mode = 'on'
+        await asyncio.sleep(3)  # give IR time to turn on
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            wide_file = await asyncio.get_event_loop().run_in_executor(
+                pool, capture_rtsp_image, CAM_WIDE, "wide"
+            )
+
+        try:
+            if wide_file:
+                captured_files.append(wide_file)
+                logging.info(f"Appended wide_file: {wide_file}")
+        except Exception as e:
+            logging.error(f"Error appending wide_file: {e}")
+
+        # === IR OFF ===
+        set_ir_control(client, 'off')
+        ir_mode = 'off'
+        await asyncio.sleep(3)  # give IR time to turn off
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            zoom_file = await asyncio.get_event_loop().run_in_executor(
+                pool, capture_rtsp_image, CAM_ZOOM, "zoom"
+            )
+
+        try:
+            if zoom_file:
+                captured_files.append(zoom_file)
+                logging.info(f"Appended zoom_file: {zoom_file}")
+        except Exception as e:
+            logging.error(f"Error appending zoom_file: {e}")
+
+        # === IR ON ===
+        set_ir_control(client, 'on')
+        ir_mode = 'on'
+        await asyncio.sleep(3)  # give IR time to turn on
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            zoom_file = await asyncio.get_event_loop().run_in_executor(
+                pool, capture_rtsp_image, CAM_ZOOM, "zoom"
+            )
+
+        try:
+            if zoom_file:
+                captured_files.append(zoom_file)
+                logging.info(f"Appended zoom_file: {zoom_file}")
+        except Exception as e:
+            logging.error(f"Error appending zoom_file: {e}")
+
+        # Small gap before next preset
+        await asyncio.sleep(5)
+
+    # === ALL DONE — UPLOAD EVERYTHING AT ONCE ===
+    logging.info(f"Sequence complete — uploading {len(captured_files)} images...")
+
+    for fpath in captured_files:
+        await upload_to_nextcloud(fpath)
+
+    # Cleanup
+    set_ir_control(client, 'auto')
+    ir_mode = 'auto'
+    is_capture_sequence = False
+    logging.info("RTSP capture sequence and upload finished")
+
+# async def rtsp_capture_sequence(client, start: int = start_preset, end: int = end_preset):
+#     global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
+#     logging.info(f"Starting RTSP capture sequence (presets {start_preset}→{end_preset})")
+#     is_capture_sequence = True
+
+#     captured_files = []  # Collect all files here
+
+#     for preset in range(start_preset, end_preset + 1):
+#         current_preset = preset
+#         go_to_preset(client, preset)
+#         await asyncio.sleep(5)  # let PTZ settle
+
+#         # === IR OFF ===
+#         set_ir_control(client, 'off')
+#         ir_mode = 'off'
+#         await asyncio.sleep(5)  # give IR time to turn off
+
+#         with concurrent.futures.ThreadPoolExecutor() as pool:
+#             wide_file = await asyncio.get_event_loop().run_in_executor(
+#                 pool, capture_rtsp_image, CAM_WIDE, "wide"
+#             )
+#             zoom_file = await asyncio.get_event_loop().run_in_executor(
+#                 pool, capture_rtsp_image, CAM_ZOOM, "zoom"
+#             )
+
+#         if wide_file:
+#             captured_files.append(wide_file)
+#         if zoom_file:
+#             captured_files.append(zoom_file)
+
+#         # === IR ON ===
+#         set_ir_control(client, 'on')
+#         ir_mode = 'on'
+#         await asyncio.sleep(5)  # give IR time to turn on
+
+#         with concurrent.futures.ThreadPoolExecutor() as pool:
+#             wide_file = await asyncio.get_event_loop().run_in_executor(
+#                 pool, capture_rtsp_image, CAM_WIDE, "wide"
+#             )
+#             zoom_file = await asyncio.get_event_loop().run_in_executor(
+#                 pool, capture_rtsp_image, CAM_ZOOM, "zoom"
+#             )
+
+#         if wide_file:
+#             captured_files.append(wide_file)
+#         if zoom_file:
+#             captured_files.append(zoom_file)
+
+#         # Small gap before next preset
+#         await asyncio.sleep(5)
+
+#     # === ALL DONE — UPLOAD EVERYTHING AT ONCE ===
+#     logging.info(f"Sequence complete — uploading {len(captured_files)} images...")
+    
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+#         futures = [
+#             pool.submit(upload_to_nextcloud, fpath)
+#             for fpath in captured_files if fpath and os.path.exists(fpath)
+#         ]
+#         for future in concurrent.futures.as_completed(futures):
+#             future.result()  # wait for all, log errors inside upload_to_nextcloud
+
+#     # Cleanup
+#     set_ir_control(client, 'auto')
+#     ir_mode = 'auto'
+#     is_capture_sequence = False
+#     logging.info("RTSP capture sequence and upload finished")
+
 # ====================== MANUAL MODE ONLY ======================
 if MODE == "manual":
     command_queue = Queue()
@@ -685,7 +915,6 @@ def stdin_loop(queue: Queue):
                                 " r - Toggle IR mode (auto/on/off)\n"
                                 " s - Trigger snapshot on both lenses\n"
                                 " b - Query battery level\n"
-                                # " p - Request presets report\n"
                                 " d - Perform custom daily capture sequence\n"
                                 " help - Show this help message")
             else:
@@ -766,7 +995,6 @@ def seconds_to_next_scheduled_time() -> float:
     logging.info(f"Next scheduled capture at {next_time.strftime('%H:%M')} → in {seconds/3600:.2f} hours")
     return seconds
 
-
 async def scheduler(client):
     while not stop_event.is_set():
         try:
@@ -786,12 +1014,13 @@ async def scheduler(client):
             logging.info(f"⏰ Scheduled time reached ({current_time}) → starting daily capture")
             
             wakeup_both_lenses(client, minutes=10)
-            await asyncio.sleep(120)
-            await perform_daily_capture(client, event_type="alt")
-            
-            # Optional: small delay after sequence to avoid double-triggering near midnight
-            await asyncio.sleep(30)
+            # await asyncio.sleep(120)
 
+            # await perform_daily_capture(client, event_type="alt")
+            await rtsp_capture_sequence(client)
+            
+            # safety gap
+            await asyncio.sleep(60)
         except Exception as e:
             logging.error(f"Error in scheduler loop: {e}", exc_info=True)
             await asyncio.sleep(60)  # no spam on error
