@@ -11,17 +11,12 @@ import signal
 import select  # For non-blocking stdin on Unix/WSL
 import shutil
 import subprocess
-import concurrent.futures
-import shlex
-import docker
 from datetime import datetime, timedelta
 from threading import Thread, Timer
 from queue import Queue
 from typing import Tuple
 from pathlib import Path
 from dotenv import load_dotenv
-
-docker_client = docker.from_env()  # connects to host Docker daemon via socket
 
 # ====================== CONFIG & MODE ======================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -154,10 +149,8 @@ async def upload_to_nextcloud(local_filename):
         for part in remote_parts:
             current_url += f"/{part}"
             resp = requests.request("PROPFIND", current_url, auth=auth, headers={"Depth": "0"}, timeout=10)
-            logging.info(f"PROPFIND {current_url} → status {resp.status_code}")
             if resp.status_code not in (200, 207):
                 mkcol = requests.request("MKCOL", current_url, auth=auth, timeout=10)
-                logging.info(f"MKCOL {current_url} → status {mkcol.status_code} {mkcol.text[:200]}")
                 if mkcol.status_code == 201:
                     logging.info(f"Created folder: {current_url}")
                 elif mkcol.status_code != 405:
@@ -167,7 +160,6 @@ async def upload_to_nextcloud(local_filename):
         with open(local_filename, "rb") as f:
             for attempt in range(1, 4):
                 resp = requests.put(remote_filename, data=f, auth=auth, headers=headers, timeout=30)
-                logging.info(f"PUT {remote_filename} → status {resp.status_code} {resp.text[:200]}")
                 if resp.status_code in (200, 201, 204):
                     logging.info(f"Uploaded → {remote_dir}/{basename}")
                     return
@@ -187,15 +179,14 @@ async def upload_to_nextcloud(local_filename):
 # Lens details 
 CAM_WIDE = os.environ.get('LENS_0_NAME', 'tambopata-0')
 CAM_ZOOM = os.environ.get('LENS_1_NAME', 'tambopata-1')
+
 lens_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
-lens_0_name = os.environ.get('LENS_0_NAME', 'tambopata-0')
-lens_1_name = os.environ.get('LENS_1_NAME', 'tambopata-1')
 
 # Topics
 status_topic = "neolink/status"
 
-preview_topic_0 = f'neolink/{lens_0_name}/status/preview'
-preview_topic_1 = f'neolink/{lens_1_name}/status/preview'
+preview_topic_0 = f'neolink/{CAM_WIDE}/status/preview'
+preview_topic_1 = f'neolink/{CAM_ZOOM}/status/preview'
 battery_level_topic = f'neolink/{lens_name}/status/battery_level'
 ptz_preset_status_topic = f'neolink/{lens_name}/status/ptz/preset'
 
@@ -204,24 +195,22 @@ ir_topic = f'{base_control}/ir'
 ptz_topic = f'{base_control}/ptz'
 ptz_preset_topic = f'{base_control}/ptz/preset'
 ptz_assign_topic = f'{base_control}/ptz/assign'
-zoom_topic = f'neolink/{lens_1_name}/control/zoom'
+zoom_topic = f'neolink/{CAM_ZOOM}/control/zoom'
 
 base_query = f'neolink/{lens_name}/query'
 battery_query_topic = f'{base_query}/battery'
 ptz_preset_query_topic = f'{base_query}/ptz/preset'
 
-preview_query_topic_0 = f'neolink/{lens_0_name}/query/preview'
-preview_query_topic_1 = f'neolink/{lens_1_name}/query/preview'
+preview_query_topic_0 = f'neolink/{CAM_WIDE}/query/preview'
+preview_query_topic_1 = f'neolink/{CAM_ZOOM}/query/preview'
 
-wakeup_topic_0 = f'neolink/{lens_0_name}/control/wakeup'
-wakeup_topic_1 = f'neolink/{lens_1_name}/control/wakeup'
+wakeup_topic_0 = f'neolink/{CAM_WIDE}/control/wakeup'
+wakeup_topic_1 = f'neolink/{CAM_ZOOM}/control/wakeup'
 
 # Image save directory
 save_dir = './captures'
 
-if MODE == "controller":
-    save_dir = os.path.join(save_dir, "from_controller")
-elif MODE == "manual":
+if MODE == "manual":
     save_dir = os.path.join(save_dir, "from_manual")
 
 os.makedirs(save_dir, exist_ok=True)
@@ -291,7 +280,7 @@ if start_preset > end_preset:
 if MODE == "controller":
     # Global list of scheduled times
     SCHEDULED_TIMES = parse_schedule_times()
-    logging.info(f"Daily capture preset range configured: {start_preset} → {end_preset}")
+    logging.info(f"Capture preset range configured: {start_preset} → {end_preset}")
 
 ir_mode = 'auto'
 zoom_levels = [1.0, 2.0, 3.5]
@@ -390,7 +379,7 @@ def connect_mqtt(broker, port, client_id, username=None, password=None):
                 local_now = now - timedelta(hours=5)
                 date_str   = local_now.strftime("%Y-%m-%d")          
                 timestamp  = local_now.strftime("%H-%M")             
-                lens_id    = "wide" if lens_0_name in msg.topic else "zoom"
+                lens_id    = "wide" if CAM_WIDE in msg.topic else "zoom"
 
                 # Base paths
                 base_dir   = os.path.join(save_dir, date_str)                    
@@ -515,116 +504,6 @@ def trigger_snapshot(client):
     else:
         logging.warning(f"Failed to send trigger snapshot command to {preview_query_topic_1}, rc={result_1.rc}")
 
-def capture_rtsp_image(camera_name: str, lens: str) -> str | None:
-    """Capture image using neolink CLI and save to structured path."""
-
-    now = datetime.now()
-    local_now = now - timedelta(hours=5)
-    date_str = local_now.strftime("%Y-%m-%d")
-    timestamp = local_now.strftime("%H-%M-%S")
-
-    # Build exact path you want
-    path_parts = [
-        "/shared/captures", # shared path inside Docker container
-        date_str,
-        lens,
-        ir_mode,
-        f"preset_{current_preset}"
-    ]
-
-    full_dir = os.path.join(*path_parts)
-
-    filename = os.path.join(full_dir, f"PE-TNR_{lens}_{ir_mode}_{current_preset}_{timestamp}.jpeg")
-
-    # The full inner command
-    inner_cmd = f"neolink image --config /etc/neolink.toml --file-path {shlex.quote(filename)} {shlex.quote(camera_name)}"
-    
-    try:
-        result = docker_client.containers.get("neolink").exec_run(inner_cmd, demux=False)
-        if result.exit_code == 0:
-            logging.info(f"RTSP capture ({lens}): {filename}")
-            host_path = filename.replace("/shared/captures", "./captures")
-            return host_path
-        else:
-            logging.error(f"neolink image failed ({camera_name}): {result.output.decode()}")
-            return None
-    except Exception as e:
-        logging.error(f"Exec error ({camera_name}): {e}")
-        return None
-    
-    # cmd = [
-    #     "docker", "compose", "exec",
-    #     "-T",                     # No TTY (non-interactive)
-    #     "neolink",                # Container name
-    #     "/bin/sh", "-c",          # Shell wrapper
-    #     inner_cmd                 # The exact command
-    # ]
-
-    # try:
-    #     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    #     if result.returncode == 0:
-    #         if os.path.exists(filename.replace("/shared/captures", "./captures")):
-    #             logging.info(f"RTSP capture ({lens}): {filename}")
-    #             return filename.replace("/shared/captures", "./captures")  # Return host path
-    #         else:
-    #             logging.error(f"Capture succeeded but file missing: {filename}")
-    #             return None
-    #     else:
-    #         logging.error(f"neolink image failed ({camera_name}): {result.stderr.strip()}")
-    #         return None
-    # except subprocess.TimeoutExpired:
-    #     logging.error(f"Capture timeout ({camera_name})")
-    #     return None
-    # except Exception as e:
-    #     logging.error(f"Exec error ({camera_name}): {e}")
-    #     return None
-
-# def capture_rtsp_image_ffmpeg(lens: str) -> str | None:
-#     RTSP URLs from Neolink (always live)
-#     rtsp_urls = {
-#         "wide": f"rtsp://neolink:8554/{CAM_WIDE}/main",
-#         "zoom": f"rtsp://neolink:8554/{CAM_ZOOM}/main"
-#     }
-
-#     now = datetime.now()
-#     local_now = now - timedelta(hours=5)
-#     date_str = local_now.strftime("%Y-%m-%d")
-#     timestamp = local_now.strftime("%H-%M-%S")
-
-#     path_parts = [
-#         save_dir,
-#         date_str,
-#         lens,
-#         ir_mode,
-#         f"preset_{current_preset}"
-#     ]
-#     full_dir = os.path.join(*path_parts)
-#     os.makedirs(full_dir, exist_ok=True)
-
-#     filename = os.path.join(full_dir, f"PE-TNR_{lens}_{ir_mode}_{current_preset}_{timestamp}.jpg")
-
-#     cmd = [
-#         "ffmpeg",
-#         "-y",                     # overwrite
-#         "-rtsp_transport", "tcp", # stable
-#         "-i", rtsp_urls[lens],
-#         "-vframes", "1",          # one frame
-#         "-q:v", "2",              # high quality
-#         filename
-#     ]
-
-#     try:
-#         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-#         if result.returncode == 0 and os.path.exists(filename):
-#             logging.info(f"RTSP snapshot ({lens}): {filename}")
-#             return filename
-#         else:
-#             logging.error(f"ffmpeg failed ({lens}): {result.stderr}")
-#             return None
-#     except Exception as e:
-#         logging.error(f"RTSP capture error ({lens}): {e}")
-#         return None
-
 def assign_preset(client, preset_id, name):
     safe_name = name.replace(" ", "_")
     payload = f"{preset_id} {safe_name}"
@@ -648,10 +527,62 @@ def wakeup_both_lenses(client, minutes=10):
     else:
         logging.warning(f"Failed to send wakeup command to {wakeup_topic_1}, rc={result_1.rc}")
 
-# ====================== DAILY SEQUENCE ======================
-async def perform_daily_capture(client, event_type: str = "alt", start: int = start_preset, end: int = end_preset):
-    global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
-    logging.info(f"Starting daily capture sequence (mode={event_type}, presets {start}→{end})")
+def capture_rtsp_image_ffmpeg(lens: str) -> str | None:
+    # RTSP URLs from Neolink 
+    rtsp_urls = {
+        "wide": f"rtsp://neolink:8554/{CAM_WIDE}",
+        "zoom": f"rtsp://neolink:8554/{CAM_ZOOM}"
+    }
+
+    now = datetime.now()
+    local_now = now - timedelta(hours=5)
+    date_str = local_now.strftime("%Y-%m-%d")
+    timestamp = local_now.strftime("%H-%M-%S")
+
+    path_parts = [
+        save_dir,
+        date_str,
+        lens,
+        ir_mode,
+        f"preset_{current_preset}"
+    ]
+    full_dir = os.path.join(*path_parts)
+    os.makedirs(full_dir, exist_ok=True)
+
+    filename = os.path.join(full_dir, f"PE-TNR_{lens}_{ir_mode}_{current_preset}_{timestamp}.jpeg")
+
+    cmd = [
+        "ffmpeg",
+        "-y",                      # overwrite
+        "-rtsp_transport", "tcp",  # use TCP
+        "-i", rtsp_urls[lens],     # input URL
+        "-frames:v", "1",          # one frame arg
+        "-update", "1",            # one frame arg
+        filename
+    ]
+
+    try:
+        start_time = time.perf_counter()
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+
+        if result.returncode == 0:
+            logging.info(f"RTSP snapshot ({lens}): {filename} | Time: {duration:.2f}s")
+            return filename
+        else:
+            logging.error(f"ffmpeg failed ({lens}): {result.stderr} | Time: {duration:.2f}s")
+            return None
+    except Exception as e:
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        logging.error(f"RTSP capture error ({lens}): {e} | Time: {duration:.3f}s")
+        return None
+
+# ====================== CAPTURE SEQUENCE ======================
+async def perform_capture_sequence(client, event_type: str = "alt", start: int = start_preset, end: int = end_preset):
+    global is_capture_sequence, current_preset, ir_mode
+    logging.info(f"Starting capture sequence (mode={event_type}, presets {start}→{end})")
     query_battery(client)
     await asyncio.sleep(2)
     is_capture_sequence = True
@@ -698,10 +629,10 @@ async def perform_daily_capture(client, event_type: str = "alt", start: int = st
     set_ir_control(client, 'auto')
     ir_mode = 'auto'
     is_capture_sequence = False
-    logging.info("Daily capture sequence finished")
+    logging.info("Capture sequence finished")
 
-async def rtsp_capture_sequence(client, start: int = start_preset, end: int = end_preset):
-    global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
+async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: int = end_preset):
+    global is_capture_sequence, current_preset, ir_mode
     logging.info(f"Starting RTSP capture sequence (presets {start_preset}→{end_preset})")
     is_capture_sequence = True
 
@@ -712,156 +643,60 @@ async def rtsp_capture_sequence(client, start: int = start_preset, end: int = en
         go_to_preset(client, preset)
         await asyncio.sleep(5)  # let PTZ settle
 
-        # === IR OFF ===
-        set_ir_control(client, 'off')
-        ir_mode = 'off'
-        await asyncio.sleep(3)  # give IR time to turn off
+        for i in range(2):  # two iterations: first IR off, then IR on
+            if i == 0:
+                # === IR OFF ===
+                set_ir_control(client, 'off')
+                ir_mode = 'off'
+                await asyncio.sleep(3)  # give IR time to turn off
+            else:
+                # === IR ON ===
+                set_ir_control(client, 'on')
+                ir_mode = 'on'
+                await asyncio.sleep(3)  # give IR time to turn on
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            wide_file = await asyncio.get_event_loop().run_in_executor(
-                pool, capture_rtsp_image, CAM_WIDE, "wide"
-            )
+            wide_file = capture_rtsp_image_ffmpeg("wide")
 
-        try:
-            if wide_file:
-                captured_files.append(wide_file)
-                logging.info(f"Appended wide_file: {wide_file}")
-        except Exception as e:
-            logging.error(f"Error appending wide_file: {e}")
+            try:
+                if wide_file:
+                    captured_files.append(wide_file)
+                    logging.info(f"Appended wide_file: {wide_file}")
+            except Exception as e:
+                logging.error(f"Error appending wide_file: {e}")
 
-        # === IR ON ===
-        set_ir_control(client, 'on')
-        ir_mode = 'on'
-        await asyncio.sleep(3)  # give IR time to turn on
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            wide_file = await asyncio.get_event_loop().run_in_executor(
-                pool, capture_rtsp_image, CAM_WIDE, "wide"
-            )
+        for i in range(2):  # two iterations: first IR off, then IR on
+            if i == 0:
+                # === IR OFF ===
+                set_ir_control(client, 'off')
+                ir_mode = 'off'
+                await asyncio.sleep(3)  # give IR time to turn off
+            else:
+                # === IR ON ===
+                set_ir_control(client, 'on')
+                ir_mode = 'on'
+                await asyncio.sleep(3)  # give IR time to turn on
 
-        try:
-            if wide_file:
-                captured_files.append(wide_file)
-                logging.info(f"Appended wide_file: {wide_file}")
-        except Exception as e:
-            logging.error(f"Error appending wide_file: {e}")
+            zoom_file = capture_rtsp_image_ffmpeg("zoom")
 
-        # === IR OFF ===
-        set_ir_control(client, 'off')
-        ir_mode = 'off'
-        await asyncio.sleep(3)  # give IR time to turn off
+            try:
+                if zoom_file:
+                    captured_files.append(zoom_file)
+                    logging.info(f"Appended zoom_file: {zoom_file}")
+            except Exception as e:
+                logging.error(f"Error appending zoom_file: {e}")
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            zoom_file = await asyncio.get_event_loop().run_in_executor(
-                pool, capture_rtsp_image, CAM_ZOOM, "zoom"
-            )
-
-        try:
-            if zoom_file:
-                captured_files.append(zoom_file)
-                logging.info(f"Appended zoom_file: {zoom_file}")
-        except Exception as e:
-            logging.error(f"Error appending zoom_file: {e}")
-
-        # === IR ON ===
-        set_ir_control(client, 'on')
-        ir_mode = 'on'
-        await asyncio.sleep(3)  # give IR time to turn on
-
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            zoom_file = await asyncio.get_event_loop().run_in_executor(
-                pool, capture_rtsp_image, CAM_ZOOM, "zoom"
-            )
-
-        try:
-            if zoom_file:
-                captured_files.append(zoom_file)
-                logging.info(f"Appended zoom_file: {zoom_file}")
-        except Exception as e:
-            logging.error(f"Error appending zoom_file: {e}")
-
-        # Small gap before next preset
-        await asyncio.sleep(5)
-
-    # === ALL DONE — UPLOAD EVERYTHING AT ONCE ===
+    # Upload everything at once
     logging.info(f"Sequence complete — uploading {len(captured_files)} images...")
 
-    for fpath in captured_files:
-        await upload_to_nextcloud(fpath)
+    # for fpath in captured_files:
+    #     await upload_to_nextcloud(fpath)
 
     # Cleanup
     set_ir_control(client, 'auto')
     ir_mode = 'auto'
     is_capture_sequence = False
     logging.info("RTSP capture sequence and upload finished")
-
-# async def rtsp_capture_sequence(client, start: int = start_preset, end: int = end_preset):
-#     global is_capture_sequence, current_preset, ir_mode, start_preset, end_preset
-#     logging.info(f"Starting RTSP capture sequence (presets {start_preset}→{end_preset})")
-#     is_capture_sequence = True
-
-#     captured_files = []  # Collect all files here
-
-#     for preset in range(start_preset, end_preset + 1):
-#         current_preset = preset
-#         go_to_preset(client, preset)
-#         await asyncio.sleep(5)  # let PTZ settle
-
-#         # === IR OFF ===
-#         set_ir_control(client, 'off')
-#         ir_mode = 'off'
-#         await asyncio.sleep(5)  # give IR time to turn off
-
-#         with concurrent.futures.ThreadPoolExecutor() as pool:
-#             wide_file = await asyncio.get_event_loop().run_in_executor(
-#                 pool, capture_rtsp_image, CAM_WIDE, "wide"
-#             )
-#             zoom_file = await asyncio.get_event_loop().run_in_executor(
-#                 pool, capture_rtsp_image, CAM_ZOOM, "zoom"
-#             )
-
-#         if wide_file:
-#             captured_files.append(wide_file)
-#         if zoom_file:
-#             captured_files.append(zoom_file)
-
-#         # === IR ON ===
-#         set_ir_control(client, 'on')
-#         ir_mode = 'on'
-#         await asyncio.sleep(5)  # give IR time to turn on
-
-#         with concurrent.futures.ThreadPoolExecutor() as pool:
-#             wide_file = await asyncio.get_event_loop().run_in_executor(
-#                 pool, capture_rtsp_image, CAM_WIDE, "wide"
-#             )
-#             zoom_file = await asyncio.get_event_loop().run_in_executor(
-#                 pool, capture_rtsp_image, CAM_ZOOM, "zoom"
-#             )
-
-#         if wide_file:
-#             captured_files.append(wide_file)
-#         if zoom_file:
-#             captured_files.append(zoom_file)
-
-#         # Small gap before next preset
-#         await asyncio.sleep(5)
-
-#     # === ALL DONE — UPLOAD EVERYTHING AT ONCE ===
-#     logging.info(f"Sequence complete — uploading {len(captured_files)} images...")
-    
-#     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-#         futures = [
-#             pool.submit(upload_to_nextcloud, fpath)
-#             for fpath in captured_files if fpath and os.path.exists(fpath)
-#         ]
-#         for future in concurrent.futures.as_completed(futures):
-#             future.result()  # wait for all, log errors inside upload_to_nextcloud
-
-#     # Cleanup
-#     set_ir_control(client, 'auto')
-#     ir_mode = 'auto'
-#     is_capture_sequence = False
-#     logging.info("RTSP capture sequence and upload finished")
 
 # ====================== MANUAL MODE ONLY ======================
 if MODE == "manual":
@@ -915,7 +750,7 @@ def stdin_loop(queue: Queue):
                                 " r - Toggle IR mode (auto/on/off)\n"
                                 " s - Trigger snapshot on both lenses\n"
                                 " b - Query battery level\n"
-                                " d - Perform custom daily capture sequence\n"
+                                " d - Perform custom capture sequence\n"
                                 " help - Show this help message")
             else:
                 logging.info(f"Unknown command: {line} (try: 'help' for list of commands)")
@@ -965,7 +800,7 @@ async def process_commands(client):
                         start_preset, end_preset = end_preset, start_preset
                 except ValueError:
                     logging.error("Invalid numbers")
-                await perform_daily_capture(client, et if et in ["on", "off", "alt"] else "alt", start=start_preset, end=end_preset)
+                await perform_capture_sequence(client, et if et in ["on", "off", "alt"] else "alt", start=start_preset, end=end_preset)
         command_queue.task_done()
 
 # ====================== CONTROLLER MODE ONLY ======================
@@ -1011,13 +846,15 @@ async def scheduler(client):
 
             # ——— RUN CAPTURE SEQUENCE ———
             current_time = datetime.now().strftime("%H:%M")
-            logging.info(f"⏰ Scheduled time reached ({current_time}) → starting daily capture")
+            logging.info(f"⏰ Scheduled time reached ({current_time}) → starting capture sequence")
             
             wakeup_both_lenses(client, minutes=10)
-            # await asyncio.sleep(120)
+            
+            # await asyncio.sleep(75) TODO: find a way to check if the stream from the cameras are live then stop sleeping
 
-            # await perform_daily_capture(client, event_type="alt")
-            await rtsp_capture_sequence(client)
+            # await perform_capture_sequence(client, event_type="alt")
+            await rtsp_capture_sequence_ffmpeg(client)
+            # await rtsp_capture_sequence(client)
             
             # safety gap
             await asyncio.sleep(60)
