@@ -6,6 +6,8 @@ COPY ./python_mqtt_client/requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN apk add --no-cache ffmpeg
+
 COPY ./python_mqtt_client/client.py .
 
 CMD ["python", "client.py"]
