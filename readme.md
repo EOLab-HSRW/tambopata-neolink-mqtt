@@ -210,3 +210,7 @@ https://mosquitto.org/
 ### Docker Python API
 
 https://docker-py.readthedocs.io/en/stable/index.html
+
+### Camera used in this project
+
+https://reolink.com/at/product/trackmix-series-b770/?srsltid=AfmBOorseGtuIwkLq2XB1J_5GkBWVwLwHaqyIHLHVOAukUpoaAaTwm7y#overview
