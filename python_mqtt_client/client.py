@@ -66,7 +66,7 @@ def cleanup_local_captures(keep_period: int = 24):
 
     for root, dirs, files in os.walk(save_dir):
         for file in files:
-            if not file.lower().endswith('.jpg'):
+            if not file.lower().endswith('.jpeg'):
                 continue
             filepath = os.path.join(root, file)
             try:
@@ -106,7 +106,7 @@ async def upload_to_nextcloud(local_filename):
         return
 
     try:
-        # Parse filename: PE-TNR_wide_off_2_09-30.jpg
+        # Parse filename: PE-TNR_wide_off_2_09-30.jpeg
         basename = os.path.basename(local_filename)
         try:
             parts = basename.split('_')
@@ -139,7 +139,7 @@ async def upload_to_nextcloud(local_filename):
         ]
         remote_dir = "/".join(remote_parts)
         remote_filename = f"{NEXTCLOUD_WEBDAV_URL}/{remote_dir}/{basename}"
-        logging.info(f"Uploading to Nextcloud → {remote_filename}")
+        logging.info(f"Uploading to Nextcloud → {basename}")
 
         auth = (NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD)
         headers = {'Content-Type': 'image/jpeg'}
@@ -527,7 +527,47 @@ def wakeup_both_lenses(client, minutes=10):
     else:
         logging.warning(f"Failed to send wakeup command to {wakeup_topic_1}, rc={result_1.rc}")
 
-def capture_rtsp_image_ffmpeg(lens: str) -> str | None:
+async def wait_for_rtsp_streams(timeout=150):
+    """Poll both RTSP streams until they are ready (can grab 1 frame)."""
+    urls = {
+        "wide": f"rtsp://neolink:8554/{CAM_WIDE}",
+        "zoom": f"rtsp://neolink:8554/{CAM_ZOOM}"
+    }
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ready = {}
+        for lens, url in urls.items():
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-rtsp_transport", "tcp",
+                "-i", url,
+                "-frames:v", "1",
+                "-f", "null",
+                "-"
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    ready[lens] = True
+                    logging.info(f"RTSP stream ready: {lens} ({url})")
+                else:
+                    ready[lens] = False
+            except Exception as e:
+                ready[lens] = False
+
+        if all(ready.values()):
+            logging.info("Both RTSP streams are live and ready!")
+            return True
+
+        logging.debug(f"Streams not ready yet (wide: {ready.get('wide')}, zoom: {ready.get('zoom')}) – retrying in 5s")
+        await asyncio.sleep(5)
+
+    logging.warning("Timeout waiting for RTSP streams – proceeding anyway")
+    return False
+
+async def capture_rtsp_image_ffmpeg(lens: str) -> str | None:
     # RTSP URLs from Neolink 
     rtsp_urls = {
         "wide": f"rtsp://neolink:8554/{CAM_WIDE}",
@@ -655,7 +695,7 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
                 ir_mode = 'on'
                 await asyncio.sleep(3)  # give IR time to turn on
 
-            wide_file = capture_rtsp_image_ffmpeg("wide")
+            wide_file = (await capture_rtsp_image_ffmpeg("wide"))
 
             try:
                 if wide_file:
@@ -677,7 +717,7 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
                 ir_mode = 'on'
                 await asyncio.sleep(3)  # give IR time to turn on
 
-            zoom_file = capture_rtsp_image_ffmpeg("zoom")
+            zoom_file = (await capture_rtsp_image_ffmpeg("zoom"))
 
             try:
                 if zoom_file:
@@ -689,8 +729,8 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
     # Upload everything at once
     logging.info(f"Sequence complete — uploading {len(captured_files)} images...")
 
-    # for fpath in captured_files:
-    #     await upload_to_nextcloud(fpath)
+    for fpath in captured_files:
+        await upload_to_nextcloud(fpath)
 
     # Cleanup
     set_ir_control(client, 'auto')
@@ -831,6 +871,7 @@ def seconds_to_next_scheduled_time() -> float:
     return seconds
 
 async def scheduler(client):
+    global wakeup_sent
     while not stop_event.is_set():
         try:
             seconds = seconds_to_next_scheduled_time()
@@ -848,13 +889,14 @@ async def scheduler(client):
             current_time = datetime.now().strftime("%H:%M")
             logging.info(f"⏰ Scheduled time reached ({current_time}) → starting capture sequence")
             
-            wakeup_both_lenses(client, minutes=10)
-            
-            # await asyncio.sleep(75) TODO: find a way to check if the stream from the cameras are live then stop sleeping
+            logging.info("Waiting for RTSP streams to become live...")
+            await wait_for_rtsp_streams(timeout=150)
 
-            # await perform_capture_sequence(client, event_type="alt")
+            wakeup_both_lenses(client, minutes=10)
+            wakeup_sent = True
+            Timer(600, reset_wakeup_flag).start()
+            
             await rtsp_capture_sequence_ffmpeg(client)
-            # await rtsp_capture_sequence(client)
             
             # safety gap
             await asyncio.sleep(60)
