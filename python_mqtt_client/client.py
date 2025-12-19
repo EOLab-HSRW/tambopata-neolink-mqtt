@@ -44,137 +44,6 @@ username = str(os.environ.get('MQTT_USERNAME'))
 password = str(os.environ.get('MQTT_PASSWORD'))
 client_id = f'python-mqtt-{MODE}-{uuid.getnode()}'
 
-# ====================== NEXTCLOUD WEBDAV SETUP ======================
-
-NEXTCLOUD_WEBDAV_URL = os.environ.get('NEXTCLOUD_WEBDAV_URL', '').rstrip('/')
-NEXTCLOUD_USERNAME = os.environ.get('NEXTCLOUD_USERNAME', '')
-NEXTCLOUD_PASSWORD = os.environ.get('NEXTCLOUD_PASSWORD', '')
-NEXTCLOUD_TARGET_DIR = os.environ.get('NEXTCLOUD_TARGET_DIR', '/Shared/Reolink-Camera-Tambopata-1').strip('/')
-
-keep_hours = float(os.environ.get('LOCAL_KEEP_HOURS', '24'))
-
-def cleanup_local_captures(keep_period: int = 24):
-    """
-    Delete local captures older than X hours.
-    Called after each successful upload.
-    """
-    global save_dir
-    now = datetime.now()
-    local_now = now - timedelta(hours=5)  # adjust to local time if needed
-    cutoff = local_now - timedelta(hours=keep_period)
-    deleted_count = 0
-
-    for root, dirs, files in os.walk(save_dir):
-        for file in files:
-            if not file.lower().endswith('.jpeg'):
-                continue
-            filepath = os.path.join(root, file)
-            try:
-                file_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-                if file_time < cutoff:
-                    os.remove(filepath)
-                    deleted_count += 1
-                    # log every 50 deletions
-                    if deleted_count % 50 == 0:
-                        logging.info(f"Cleaned up {deleted_count} old local images...")
-            except Exception as e:
-                logging.debug(f"Failed to delete {filepath}: {e}")
-
-    # silent failure
-    if deleted_count > 0:
-        logging.info(f"Local cleanup complete — deleted {deleted_count} files older than {keep_period}h")
-
-    # remove empty folders
-    for root, dirs, files in os.walk(save_dir, topdown=False):
-        for d in dirs:
-            dirpath = os.path.join(root, d)
-            try:
-                if not os.listdir(dirpath):  # empty
-                    os.rmdir(dirpath)
-            except:
-                pass
-
-async def upload_to_nextcloud(local_filename):
-    """Upload to custom Nextcloud path using only NEXTCLOUD_TARGET_DIR."""
-    logging.info(f"Attempting upload for: {local_filename}")
-
-    if MODE != "controller" or not is_capture_sequence:
-        return
-
-    if not all([NEXTCLOUD_WEBDAV_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD]):
-        logging.warning("Nextcloud credentials missing – skipping upload")
-        return
-
-    try:
-        # Parse filename: PE-TNR_wide_off_2_09-30.jpeg
-        basename = os.path.basename(local_filename)
-        try:
-            parts = basename.split('_')
-            lens_id = parts[1]        # wide or zoom
-            ir_mode = parts[2]        # on/off/auto
-            preset = parts[3]         # 0,1,2,3
-        except IndexError:
-            logging.warning(f"Cannot parse filename: {basename}")
-            return
-
-        # Use local time (-5h already applied when saving)
-        try:
-            dir_path = os.path.dirname(local_filename)
-            date_folder = os.path.basename(dir_path)  # e.g., "2025-12-16"
-            # Validate it's a date folder
-            datetime.strptime(date_folder, "%Y-%m-%d")
-            date_str = date_folder
-        except:
-            # Fallback to current (with -5h)
-            local_now = datetime.now() - timedelta(hours=5)
-            date_str = local_now.strftime("%Y-%m-%d")
-
-        # Build path exactly as you want
-        remote_parts = [
-            NEXTCLOUD_TARGET_DIR.lstrip('/'),           # e.g. "Shared/Reolink-Camera-Tambopata-1"
-            date_str,                         # 2025-11-25
-            lens_id,                          # wide or zoom
-            ir_mode,                          # on/off/auto
-            f"preset_{preset}"
-        ]
-        remote_dir = "/".join(remote_parts)
-        remote_filename = f"{NEXTCLOUD_WEBDAV_URL}/{remote_dir}/{basename}"
-        logging.info(f"Uploading to Nextcloud → {basename}")
-
-        auth = (NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD)
-        headers = {'Content-Type': 'image/jpeg'}
-
-        # Recursively create directories
-        current_url = NEXTCLOUD_WEBDAV_URL
-        for part in remote_parts:
-            current_url += f"/{part}"
-            resp = requests.request("PROPFIND", current_url, auth=auth, headers={"Depth": "0"}, timeout=10)
-            if resp.status_code not in (200, 207):
-                mkcol = requests.request("MKCOL", current_url, auth=auth, timeout=10)
-                if mkcol.status_code == 201:
-                    logging.info(f"Created folder: {current_url}")
-                elif mkcol.status_code != 405:
-                    logging.warning(f"MKCOL failed ({mkcol.status_code})")
-
-        # Upload with retry
-        with open(local_filename, "rb") as f:
-            for attempt in range(1, 4):
-                resp = requests.put(remote_filename, data=f, auth=auth, headers=headers, timeout=30)
-                if resp.status_code in (200, 201, 204):
-                    logging.info(f"Uploaded → {remote_dir}/{basename}")
-                    return
-                f.seek(0)
-                time.sleep(2 ** attempt)
-        logging.error(f"Upload failed after 3 attempts: {basename}")
-
-    except Exception as e:
-        logging.error(f"Nextcloud error: {e}", exc_info=True)
-    finally:
-        try:
-            cleanup_local_captures(keep_period=keep_hours)
-        except:
-            pass
-
 # ====================== TOPICS & PATHS ======================
 # Lens details 
 CAM_WIDE = os.environ.get('LENS_0_NAME', 'tambopata-0')
@@ -295,6 +164,124 @@ def reset_wakeup_flag():
     global wakeup_sent
     wakeup_sent = False
     logging.info("Wakeup window expired")
+
+# ====================== NEXTCLOUD WEBDAV SETUP ======================
+
+NEXTCLOUD_WEBDAV_URL = os.environ.get('NEXTCLOUD_WEBDAV_URL', '').rstrip('/')
+NEXTCLOUD_USERNAME = os.environ.get('NEXTCLOUD_USERNAME', '')
+NEXTCLOUD_PASSWORD = os.environ.get('NEXTCLOUD_PASSWORD', '')
+NEXTCLOUD_TARGET_DIR = os.environ.get('NEXTCLOUD_TARGET_DIR', '').strip('/')
+
+keep_hours = float(os.environ.get('LOCAL_KEEP_HOURS', '24'))
+
+def cleanup_local_captures(keep_period: float = 24.0):
+    """Delete local captures older than X hours (keep_period in hours, can be fractional)."""
+    cutoff = datetime.now() - timedelta(hours=keep_period)
+    deleted_count = 0
+
+    for root, dirs, files in os.walk(save_dir):
+        for file in files:
+            if not file.lower().endswith(('.jpg', '.jpeg')):
+                continue
+            filepath = os.path.join(root, file)
+            try:
+                file_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+                if file_time < cutoff:
+                    os.remove(filepath)
+                    deleted_count += 1
+                    if deleted_count % 50 == 0:
+                        logging.info(f"Cleaned up {deleted_count} old local images...")
+            except Exception as e:
+                logging.debug(f"Failed to delete {filepath}: {e}")
+
+    if deleted_count > 0:
+        logging.info(f"Local cleanup complete — deleted {deleted_count} files older than {keep_period}h")
+
+    # Remove empty folders
+    for root, dirs, files in os.walk(save_dir, topdown=False):
+        for d in dirs:
+            dirpath = os.path.join(root, d)
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+                    logging.debug(f"Removed empty folder: {dirpath}")
+            except:
+                pass
+
+async def upload_to_nextcloud(local_filename):
+    """Upload to custom Nextcloud path using only NEXTCLOUD_TARGET_DIR."""
+    logging.info(f"Attempting upload for: {local_filename}")
+
+    if MODE != "controller" or not is_capture_sequence:
+        return
+
+    if not all([NEXTCLOUD_WEBDAV_URL, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD]):
+        logging.warning("Nextcloud credentials missing – skipping upload")
+        return
+
+    try:
+        # Parse filename: PE-TNR_wide_off_2_09-30.jpeg
+        basename = os.path.basename(local_filename)
+        try:
+            parts = basename.split('_')
+            lens_id = parts[1]        # wide or zoom
+            ir_mode = parts[2]        # on/off/auto
+            preset = parts[3]         # 0,1,2,3
+        except IndexError:
+            logging.warning(f"Cannot parse filename: {basename}")
+            return
+
+        # Use local time (-5h already applied when saving)
+        try:
+            dir_path = os.path.dirname(local_filename)
+            date_folder = os.path.basename(dir_path)  # e.g., "2025-12-16"
+            # Validate it's a date folder
+            datetime.strptime(date_folder, "%Y-%m-%d")
+            date_str = date_folder
+        except:
+            # Fallback to current (with -5h)
+            local_now = datetime.now() - timedelta(hours=5)
+            date_str = local_now.strftime("%Y-%m-%d")
+
+        # Build path exactly as you want
+        remote_parts = [
+            NEXTCLOUD_TARGET_DIR.lstrip('/'),           # e.g. "Shared/Reolink-Camera-Tambopata-1"
+            date_str,                         # 2025-11-25
+            lens_id,                          # wide or zoom
+            ir_mode,                          # on/off/auto
+            f"preset_{preset}"
+        ]
+        remote_dir = "/".join(remote_parts)
+        remote_filename = f"{NEXTCLOUD_WEBDAV_URL}/{remote_dir}/{basename}"
+
+        auth = (NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD)
+        headers = {'Content-Type': 'image/jpeg'}
+
+        # Recursively create directories
+        current_url = NEXTCLOUD_WEBDAV_URL
+        for part in remote_parts:
+            current_url += f"/{part}"
+            resp = requests.request("PROPFIND", current_url, auth=auth, headers={"Depth": "0"}, timeout=10)
+            if resp.status_code not in (200, 207):
+                mkcol = requests.request("MKCOL", current_url, auth=auth, timeout=10)
+                if mkcol.status_code == 201:
+                    logging.info(f"Created folder: {current_url}")
+                elif mkcol.status_code != 405:
+                    logging.warning(f"MKCOL failed ({mkcol.status_code})")
+
+        # Upload with retry
+        with open(local_filename, "rb") as f:
+            for attempt in range(1, 4):
+                resp = requests.put(remote_filename, data=f, auth=auth, headers=headers, timeout=30)
+                if resp.status_code in (200, 201, 204):
+                    logging.info(f"Uploaded → {remote_dir}/{basename}")
+                    return
+                f.seek(0)
+                time.sleep(2 ** attempt)
+        logging.error(f"Upload failed after 3 attempts: {basename}")
+    except Exception as e:
+        logging.error(f"Nextcloud error: {e}", exc_info=True)
+        
 
 # ====================== MQTT CLIENT SETUP ======================
 def connect_mqtt(broker, port, client_id, username=None, password=None):
@@ -678,7 +665,7 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
 
     captured_files = []  # Collect all files here
 
-    for preset in range(start_preset, end_preset + 1):
+    for preset in range(start_preset, start_preset + 1):
         current_preset = preset
         go_to_preset(client, preset)
         await asyncio.sleep(5)  # let PTZ settle
@@ -700,7 +687,6 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
             try:
                 if wide_file:
                     captured_files.append(wide_file)
-                    logging.info(f"Appended wide_file: {wide_file}")
             except Exception as e:
                 logging.error(f"Error appending wide_file: {e}")
 
@@ -722,7 +708,6 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
             try:
                 if zoom_file:
                     captured_files.append(zoom_file)
-                    logging.info(f"Appended zoom_file: {zoom_file}")
             except Exception as e:
                 logging.error(f"Error appending zoom_file: {e}")
 
@@ -897,6 +882,13 @@ async def scheduler(client):
             Timer(600, reset_wakeup_flag).start()
             
             await rtsp_capture_sequence_ffmpeg(client)
+
+            # ——— CLEANUP OLD LOCAL IMAGES ———
+            logging.info("Starting local cleanup of old images...")
+            try:
+                cleanup_local_captures(keep_period=keep_hours)
+            except Exception as e:
+                logging.error(f"Cleanup failed: {e}")
             
             # safety gap
             await asyncio.sleep(60)
