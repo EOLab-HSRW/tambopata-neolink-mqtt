@@ -665,7 +665,7 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
 
     captured_files = []  # Collect all files here
 
-    for preset in range(start_preset, start_preset + 1):
+    for preset in range(start_preset, end_preset + 1):
         current_preset = preset
         go_to_preset(client, preset)
         await asyncio.sleep(5)  # let PTZ settle
