@@ -1,6 +1,7 @@
 python_mqtt_client/captures
 mqtt/config/pwfile
 mqtt/data
+mqtt/log
 
 # Security
 .env
