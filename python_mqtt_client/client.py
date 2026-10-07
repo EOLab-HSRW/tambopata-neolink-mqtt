@@ -665,7 +665,7 @@ async def rtsp_capture_sequence_ffmpeg(client, start: int = start_preset, end: i
 
     captured_files = []  # Collect all files here
 
-    for preset in range(start_preset, start_preset + 1):
+    for preset in range(start_preset, end_preset + 1):
         current_preset = preset
         go_to_preset(client, preset)
         await asyncio.sleep(5)  # let PTZ settle
@@ -852,7 +852,7 @@ def seconds_to_next_scheduled_time() -> float:
 
     next_time = min(candidates)
     seconds = (next_time - now).total_seconds()
-    logging.info(f"Next scheduled capture at {next_time.strftime('%H:%M')} → in {seconds/3600:.2f} hours")
+    logging.info(f"Next scheduled capture at {next_time.strftime('%H:%M')} → in {seconds/60:.0f} minute(s) and {seconds%60:.0f} second(s)")
     return seconds
 
 async def scheduler(client):
@@ -873,7 +873,8 @@ async def scheduler(client):
             # ——— RUN CAPTURE SEQUENCE ———
             current_time = datetime.now().strftime("%H:%M")
             logging.info(f"⏰ Scheduled time reached ({current_time}) → starting capture sequence")
-            
+            query_battery(client)
+
             logging.info("Waiting for RTSP streams to become live...")
             await wait_for_rtsp_streams(timeout=150)
 
